@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: cloud-eureka
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      # 5 24
+      defaultZone: http://localhost:7900/eureka/,http://localhost:7901/eureka/
+      #,http://localhost:7901/eureka/,http://localhost:7902/eureka/
+  server:
+    enable-self-preservation: false
+    renewal-percent-threshold: 0.85
+    eviction-interval-timer-in-ms: 1000
+    use-read-only-response-cache: true
+    response-cache-update-interval-ms: 1000
+
+
+---
+spring:
+  profiles: 7900
+server:
+  port: 7900
+eureka:
+  instance:
+    hostname: eureka-7900
+
+---
+spring:
+  profiles: 7901
+server:
+  port: 7901
+eureka:
+  instance:
+    hostname: eureka-7901
+
+---
+spring:
+  profiles: 7902
+server:
+  port: 7902
+eureka:
+  instance:
+    hostname: eureka-7902

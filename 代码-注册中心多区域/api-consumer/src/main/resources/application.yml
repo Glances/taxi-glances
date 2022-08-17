@@ -1,0 +1,32 @@
+server:
+  port: 8091
+
+eureka:
+  client:
+    service-url:
+      z1: http://localhost:7910/eureka/,http://localhost:7911/eureka/
+      z2: http://localhost:7920/eureka/,http://localhost:7921/eureka/
+    region: bj
+    availability-zones:
+      bj: z1,z2
+    prefer-same-zone-eureka: true
+      #,http://localhost:7901/eureka/,http://localhost:7902/eureka/
+
+  instance:
+
+    lease-renewal-interval-in-seconds: 1
+
+    lease-expiration-duration-in-seconds: 1
+    hostname: localhost
+
+    prefer-ip-address: true
+    ip-address: 127.0.0.1
+    # ${spring.application.name}:${spring.cloud.client.ip-address}:${server:port}
+    # api-passenger:11.11.111.1:port
+    instance-id: api-consumer
+    metadata-map:
+      zone: z1
+
+spring:
+  application:
+    name: api-consumer

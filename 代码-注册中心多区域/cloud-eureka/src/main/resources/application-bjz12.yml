@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: cloud-eureka-bjz1
+
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    region: bj
+    availability-zones:
+      bj: z1,z2
+      #,http://localhost:7901/eureka/,http://localhost:7902/eureka/
+    service-url:
+      # 5 24
+      z1: http://localhost:7911/eureka/,http://localhost:7912/eureka/
+      z2: http://localhost:7921/eureka/,http://localhost:7922/eureka/
+    prefer-same-zone-eureka: true
+
+  server:
+    # 关闭自我保护，根据服务数量，衡量。
+    enable-self-preservation: false
+    # 自我保护阈值
+    renewal-percent-threshold: 0.85
+    # 剔除服务时间间隔
+    eviction-interval-timer-in-ms: 60000
+    # 关闭从readOnly读注册表
+    use-read-only-response-cache: false
+    # readWrite 和 readOnly 同步时间间隔。
+    response-cache-update-interval-ms: 1000
+server:
+  port: 7912

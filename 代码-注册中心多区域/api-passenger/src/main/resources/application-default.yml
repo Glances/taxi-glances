@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:7900/eureka/
+#      defaultZone: http://localhost:7900/eureka/,http://localhost:7901/eureka/,http://localhost:7902/eureka/
+#      defaultZone:defaultZone http://localhost:7901/eureka/,http://localhost:7900/eureka/,http://localhost:7902/eureka/
+    enabled: true
+    registry-fetch-interval-seconds: 1
+
+
+
+  instance:
+    #服务刷新时间配置，每隔这个时间会主动心跳一次
+    lease-renewal-interval-in-seconds: 1
+    #服务过期时间配置,超过这个时间没有接收到心跳EurekaServer就会将这个实例剔除
+    lease-expiration-duration-in-seconds: 1
+    hostname: localhost
+    #true表示，将自己的ip注册到Eureka Server上，不配置或false表示将所在操作系统hostname注册到eureka server上。
+    prefer-ip-address: false
+    ip-address: 127.0.0.1
+    # ${spring.application.name}:${spring.cloud.client.ip-address}:${server:port}
+    # api-passenger:11.11.111.1:port
+    instance-id: api-passenger
+
+spring:
+  application:
+    name: api-passenger
+  cloud:
+    service-registry:
+      auto-registration:
+        enabled: true
+#logging:
+#  level:
+#    root: debug
+
+#ribbon:
+#  eager-load:
+#    clients: demo
+#    enabled: true

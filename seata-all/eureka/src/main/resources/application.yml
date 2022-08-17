@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: eureka
+
+eureka:
+  instance:
+#    prefer-ip-address: true
+#    ip-address: 127.0.0.1
+
+
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      # 5 24
+      defaultZone: http://localhost:7900/eureka/
+
+
+
+server:
+  port: 7900
+
+
