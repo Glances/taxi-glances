@@ -114,8 +114,8 @@ eureka实现了ap没有实现c
 eureka 的三级缓存:
 register 注册表
 readWriteMap
-readOnly
-断点打到 ApplicationResource # addInstance()
+useReadOnlyCache
+断点打到 ApplicationResource # addInstance() -----------------------------------------------
 ->
 registry.register(info, "true".equals(isReplication));
 ->
@@ -129,7 +129,40 @@ private final ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>> regist
   
 ->
 invalidateCache(registrant.getAppName(), registrant.getVIPAddress(), registrant.getSecureVipAddress());
-ResponseCacheImpl -> invalidate()
+AbstractInstanceRegistry # invalidateCache()
+responseCache.invalidate(appName, vipAddress, secureVipAddress);
+->
+ResponseCacheImpl # invalidate()
+invalidate(new Key(Key.EntityType.VIP, vipAddress, type, v, EurekaAccept.full));
+->
+readWriteCacheMap.invalidate(key);
+->
+// 1. 服务注册进 register, 并且让 readWriteCacheMap 失效
+LocalCache # invalidate() {
+  localCache.remove(key);
+}
 
+断点打到 ApplicationResource # getApplication() -----------------------------------------------
+  
+取服务 String payLoad = responseCache.get(cacheKey);
+->
+ResponseCacheImpl # get()
+->
+Value payload = getValue(key, useReadOnlyCache);
+->
+  // useReadOnlyCache 默认为true
+  if (useReadOnlyCache) {
+    final Value currentPayload = readOnlyCacheMap.get(key);
+    if (currentPayload != null) {
+      payload = currentPayload;
+    } else {
+      // 这里的 readOnlyCacheMap 和 readWriteCacheMap 30s 同步一次, 不是强一致性
+      // 1min 52s
+      payload = readWriteCacheMap.get(key);
+      readOnlyCacheMap.put(key, payload);
+    }
+  } else {
+    payload = readWriteCacheMap.get(key);
+  }
 ```
 
