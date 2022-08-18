@@ -84,9 +84,11 @@ int toEvict = Math.min(expiredLeases.size(), evictionLimit);
     # server剔除过期服务的时间间隔
     eviction-interval-timer-in-ms: 1000
     # 是否开启readOnly读缓存
-    use-read-only-response-cache: true
+    // 关闭从readOnly 读注册表
+    use-read-only-response-cache: true // 视频里是false ????????????????????????
     # 关闭 readOnly
-    response-cache-update-interval-ms: 1000
+    // readWrite 和 readOnly 同步时间间隔
+    response-cache-update-interval-ms: 1000 // 默认30s, 从ReadWriteCacheMap同步到, 提高服务被发现的速度
       
  	
 // eureka 中使用 Timer, 是不建议的, 说明:
@@ -156,13 +158,38 @@ Value payload = getValue(key, useReadOnlyCache);
     if (currentPayload != null) {
       payload = currentPayload;
     } else {
-      // 这里的 readOnlyCacheMap 和 readWriteCacheMap 30s 同步一次, 不是强一致性
-      // 1min 52s
+      // 这里的 readOnlyCacheMap 和 readWriteCacheMap 30s 同步一次, 不是强一致性的, 所以CAP中没有实现C
+      // 将 useReadOnlyCache 设置为false, 可以加快客户端拉取服务的速度
+      // readWriteCacheMap 是最准确的
       payload = readWriteCacheMap.get(key);
       readOnlyCacheMap.put(key, payload);
     }
   } else {
     payload = readWriteCacheMap.get(key);
   }
+
+在 ResponseCacheImpl() 的构造函数中, 
+if (shouldUseReadOnlyResponseCache) {
+  timer.schedule(getCacheUpdateTask(),
+                 // 注意这里 除以 和 乘以的 是一个东西 responseCacheUpdateIntervalMs
+                 new Date(((System.currentTimeMillis() / responseCacheUpdateIntervalMs) * responseCacheUpdateIntervalMs)
+                          + responseCacheUpdateIntervalMs),
+                 responseCacheUpdateIntervalMs);
+}
+
+
+
+-------------------------------------
+问题总结
+
+cap, 为什么是ap?
+缓存机制, 三级缓存
+  服务注册进来, 先注册进入 registry, 然后 invalidate 使得缓存失效 readWriteCache
+  
+  定时任务, 间隔 .. 时间之后同步
+  这个任务 从readWrite取出来, put 到only 里面去
+  
+  父类load Cache. 掉的时候是 getOrLoad() 方法
+
 ```
 
