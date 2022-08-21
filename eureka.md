@@ -1,6 +1,14 @@
+# eureka 生产优化
 
+![](3-eureka-server-01-%E5%BC%80%E5%85%B3.png)
+
+
+
+## 引入 eureka server
 
 ```java
+
+
 @EnableEurekaServer
 ->
 @Import(EurekaServerMarkerConfiguration.class)
@@ -21,8 +29,7 @@ public class EurekaServerMarkerConfiguration {
 @Import(EurekaServerInitializerConfiguration.class)
 // 使用开关标记是否自动配置
 @ConditionalOnBean(EurekaServerMarkerConfiguration.Marker.class)
-@EnableConfigurationProperties({ EurekaDashboardProperties.class,
-		InstanceRegistryProperties.class })
+@EnableConfigurationProperties({EurekaDashboardProperties.class, InstanceRegistryProperties.class})
 @PropertySource("classpath:/eureka/server.properties")
 public class EurekaServerAutoConfiguration implements WebMvcConfigurer
 
@@ -31,45 +38,67 @@ pom文件中引入:
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
         </dependency>
+          
 在 maven 包 eureka-server. spring.factories 文件中 注入 EurekaServerAutoConfiguration:
 /Users/wangxinze/.m2/repository
 /org/springframework/cloud/spring-cloud-netflix-eureka-server/2.2.2.RELEASE/spring-cloud-netflix-eureka-server-2.2.2.RELEASE.jar!/META-INF/spring.factories
+文件内容为:
 org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
   org.springframework.cloud.netflix.eureka.server.EurekaServerAutoConfiguration
 
 所以: @EnableEurekaServer 和 pom 组成了 EurekaServer
+```
 
-  ---------------------------------------------------------------------
-  
-  
 
-  
+
+```java
 在 EurekaServerAutoConfiguration 中 @Import 了 EurekaServerInitializerConfiguration
 EurekaServerInitializerConfiguration 里面有个 start() 方法
 因为 EurekaServerInitializerConfiguration 实现了 SmartLifecycle, 所以可以执行 start()
+
+EurekaServerInitializerConfiguration # start()
 ->
 urekaServerBootstrap.contextInitialized(EurekaServerInitializerConfiguration.this.servletContext);
 ->
 initEurekaServerContext();
 ->
+// 从 eureka server 其他的注册节点peer拉取同步注册表
+// 也就是cap中没有满足c的地方
+// 因为启动的时候才去拉数据, 所以数据不是强一致性的
+// 后注册的拉不到
+int registryCount = this.registry.syncUp();  
+下一步
 this.registry.openForTraffic(this.applicationInfoManager, registryCount);
 跳转到 PeerAwareInstanceRegistryImpl # openForTraffic()
 ->
 // Renewals happen every 30 seconds and for a minute it should be a factor of 2.
 this.expectedNumberOfClientsSendingRenews = count; // 期望客户端发送的续约的次数
-this.updateRenewsPerMinThreshold(); // 更新续约的每分钟的阈值
+this.updateRenewsPerMinThreshold(); // 更新续约的每分钟的阈值 numberOfRenewsPerMinThreshold
 ->
-postInit()
+super.postInit();
 ->
 // 定期剔除没有心跳的服务
 evictionTaskRef.set(new EvictionTask()); // 设置剔除任务
 evictionTimer.schedule(evictionTaskRef.get(),
-                       serverConfig.getEvictionIntervalTimerInMs(), // 剔除时间间隔的毫秒数 换成1s. <快速下线>
-                       serverConfig.getEvictionIntervalTimerInMs()); // 剔除得比较慢, 客户端拉取服务的时候, 还可以拉到. 拉取到不可用服务
+                       // 剔除时间间隔的毫秒数 换成1s. <快速下线>
+                       // 剔除得比较慢, 客户端拉取服务的时候, 还可以拉到. 拉取到不可用服务
+                       serverConfig.getEvictionIntervalTimerInMs(), 
+                       serverConfig.getEvictionIntervalTimerInMs());
 ->
-EvictionTask 的 run 方法中
+EvictionTask 的 run() 方法中
 evict(compensationTimeMs);
 ->
+    public boolean isLeaseExpirationEnabled() {
+        // 自我保护关闭 false -> 返回 true -> 剔除服务
+        if (!isSelfPreservationModeEnabled()) {
+            // The self preservation mode is disabled, hence allowing the instances to expire.
+            return true;
+        }
+  		  // 自我保护开启true && 每分钟续约的阈值 > 0 && 
+  			// 最后一分钟的心跳数 > 每分钟续约的阈值 ? 返回true 剔除服务 ; 返回false 不剔除自我保护正式开启
+        return numberOfRenewsPerMinThreshold > 0 && getNumOfRenewsInLastMin() > numberOfRenewsPerMinThreshold;
+    }  
+
 // 优化点: 自我保护机制, 设置阈值为0.85, 10台挂掉3台 和 100台挂掉3台的区别. <不同数量服务的自我保护>
 int registrySize = (int) getLocalRegistrySize();
 int registrySizeThreshold = (int) (registrySize * serverConfig.getRenewalPercentThreshold());
@@ -77,7 +106,7 @@ int evictionLimit = registrySize - registrySizeThreshold;
 
 int toEvict = Math.min(expiredLeases.size(), evictionLimit);
 
-// eureka 中使用 Timer, 是不建议的, 说明:
+// 注意, 在 eureka 中使用 Timer (任务剔除时), 是不建议的, 说明:
 使用ScheduledExecutorService代替Timer吧 
 Inspection info: 
 多线程并行处理定时任务时，Timer运行多个TimeTask时，只要其中之一没有捕获抛出的异常，其它任务便会自动终止运行，使用ScheduledExecutorService则没有这个问题。  
@@ -90,15 +119,58 @@ Inspection info:
             //do something
         }
     },initialDelay,period, TimeUnit.HOURS);
+
+---------------------------------------------------------------------
+
+EurekaServerAutoConfiguration import EurekaServerInitializerConfiguration 干的事情:
+1. 从peer拉取注册表
+2. 启动定时剔除任务
+3. 自我保护
+
+其中 EurekaController 是服务管理后台使用的
+  
+peerEurekaNodes 封装其他节点的一个bean, 从 int registryCount = this.registry.syncUp(); 拉取节点时候需要用到
+  
+eurekaServerContext()方法中
+->
+new DefaultEurekaServerContext()
+->
+@PostConstruct
+initialize()
+->
+registry.init(peerEurekaNodes);
+PeerAwareInstanceRegistryImpl # init()
+->
+// 初始化三级缓存
+initializedResponseCache();
+->
+responseCache = new ResponseCacheImpl(serverConfig, serverCodecs, this);
+->
+  // 定时更新缓存
+  // readWrite 和 readOnly 之前数据怎么同步?
+  // 在 ResponseCacheImpl 的构造函数启动, 该构造函数从 DefaultEurekaServerContext Bean 中启动
+  if (shouldUseReadOnlyResponseCache) {
+    timer.schedule(getCacheUpdateTask(),
+                   // x = responseCacheUpdateIntervalMs
+                   new Date(((System.currentTimeMillis() / x) * x) + x), x);
+  }
+
+  // springcloud 定义标准, eureka 实现了这套标准, springcloud 和原生的 eureka 的一个胶水代码
+  EurekaServerBootstrap 
+  
+  // jersey 框架, 对 eureka server 所有的操作都是通过 web 接口来的
+  FilterRegistrationBean jerseyFilterRegistration() 38min
+  
+
   
 ---------------------------------------------------------------------
 
   server:
-    // 自我保护看自己情况
+    // 自我保护, 看自己情况
     enable-self-preservation: true
-    // 续约阈值，和自我保护相关, 自我保护机制, 阈值0.85
+    // 续约阈值，和自我保护机制相关, 设置阈值为0.85
     renewal-percent-threshold: 0.85
-    // server剔除过期服务的时间间隔, 快速下线, 1s
+    // server剔除过期服务的时间间隔, 设置为1s, 快速下线
     eviction-interval-timer-in-ms: 1000
     // 是否开启readOnly读缓存, 关闭 readOnly
     // 关闭从readOnly 读注册表
@@ -190,6 +262,28 @@ cap, 为什么是ap?
   这个任务 从readWrite取出来, put 到only 里面去
   
   父类load Cache. 掉的时候是 getOrLoad() 方法
+  
+  -----------------------------------
+  
+  
+
+```
+
+
+
+```java
+2. 集群间同步
+  从其他peer (application.yaml 文件中的 defaultZone 就是 peer) 拉取注册表
+  
+  自我保护: 
+	服务测算
+   
+    
+    
+
+
+this.registry.openForTraffic(this.applicationInfoManager, registryCount);
+
 
 ```
 
