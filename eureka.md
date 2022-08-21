@@ -39,6 +39,7 @@ org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
 
 所以: @EnableEurekaServer 和 pom 组成了 EurekaServer
 
+  ---------------------------------------------------------------------
   
   
 
@@ -54,6 +55,7 @@ initEurekaServerContext();
 this.registry.openForTraffic(this.applicationInfoManager, registryCount);
 跳转到 PeerAwareInstanceRegistryImpl # openForTraffic()
 ->
+// Renewals happen every 30 seconds and for a minute it should be a factor of 2.
 this.expectedNumberOfClientsSendingRenews = count; // 期望客户端发送的续约的次数
 this.updateRenewsPerMinThreshold(); // 更新续约的每分钟的阈值
 ->
@@ -74,23 +76,7 @@ int registrySizeThreshold = (int) (registrySize * serverConfig.getRenewalPercent
 int evictionLimit = registrySize - registrySizeThreshold;
 
 int toEvict = Math.min(expiredLeases.size(), evictionLimit);
-  
 
-  server:
-    # 自我保护看自己情况
-    enable-self-preservation: true
-    # 续约阈值，和自我保护相关
-    renewal-percent-threshold: 0.85
-    # server剔除过期服务的时间间隔
-    eviction-interval-timer-in-ms: 1000
-    # 是否开启readOnly读缓存
-    // 关闭从readOnly 读注册表
-    use-read-only-response-cache: true // 视频里是false ????????????????????????
-    # 关闭 readOnly
-    // readWrite 和 readOnly 同步时间间隔
-    response-cache-update-interval-ms: 1000 // 默认30s, 从ReadWriteCacheMap同步到, 提高服务被发现的速度
-      
- 	
 // eureka 中使用 Timer, 是不建议的, 说明:
 使用ScheduledExecutorService代替Timer吧 
 Inspection info: 
@@ -104,13 +90,27 @@ Inspection info:
             //do something
         }
     },initialDelay,period, TimeUnit.HOURS);
+  
+---------------------------------------------------------------------
 
-优化点:
-1. 自我保护机制, 阈值0.85
-2. 快速下线, 1s
-3. 
+  server:
+    // 自我保护看自己情况
+    enable-self-preservation: true
+    // 续约阈值，和自我保护相关, 自我保护机制, 阈值0.85
+    renewal-percent-threshold: 0.85
+    // server剔除过期服务的时间间隔, 快速下线, 1s
+    eviction-interval-timer-in-ms: 1000
+    // 是否开启readOnly读缓存, 关闭 readOnly
+    // 关闭从readOnly 读注册表
+    // use-read-only-response-cache 默认是true, 可以从yaml点进去, 改成false
+    use-read-only-response-cache: false
+    // readWrite 和 readOnly 同步时间间隔
+    // 默认30s, 从ReadWriteCacheMap同步到, 提高服务被发现的速度
+    response-cache-update-interval-ms: 1000 
+      
+ 	
 
-use-read-only-response-cache 默认是true, 可以从yaml点进去, 改成false
+
   
 eureka实现了ap没有实现c
 eureka 的三级缓存:
