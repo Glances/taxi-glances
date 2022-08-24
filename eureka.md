@@ -1,13 +1,10 @@
 # eureka 生产优化
 
-![](3-eureka-server-01-%E5%BC%80%E5%85%B3.png)
-
-
-
 ## 引入 eureka server
 
-```java
+![](https://tva1.sinaimg.cn/large/e6c9d24ely1h5hwd7csj7j20uv0kgq4d.jpg)
 
+```java
 
 @EnableEurekaServer
 ->
@@ -26,6 +23,7 @@ public class EurekaServerMarkerConfiguration {
 }
 ->
 @Configuration(proxyBeanMethods = false)
+// 引入 InitializerConfiguration
 @Import(EurekaServerInitializerConfiguration.class)
 // 使用开关标记是否自动配置
 @ConditionalOnBean(EurekaServerMarkerConfiguration.Marker.class)
@@ -39,10 +37,11 @@ pom文件中引入:
             <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
         </dependency>
           
-在 maven 包 eureka-server. spring.factories 文件中 注入 EurekaServerAutoConfiguration:
+在 maven 包 eureka-server. spring.factories 文件中 :
 /Users/wangxinze/.m2/repository
 /org/springframework/cloud/spring-cloud-netflix-eureka-server/2.2.2.RELEASE/spring-cloud-netflix-eureka-server-2.2.2.RELEASE.jar!/META-INF/spring.factories
-文件内容为:
+  
+文件内容为, 注入 EurekaServerAutoConfiguration:
 org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
   org.springframework.cloud.netflix.eureka.server.EurekaServerAutoConfiguration
 
@@ -51,8 +50,20 @@ org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
 
 
 
+
+
+
+
+## EurekaServerInitializerConfiguration 源码
+
 ```java
+
 在 EurekaServerAutoConfiguration 中 @Import 了 EurekaServerInitializerConfiguration
+干的事情:
+1. 从peer拉取注册表
+2. 启动定时剔除任务
+3. 自我保护
+  
 EurekaServerInitializerConfiguration 里面有个 start() 方法
 因为 EurekaServerInitializerConfiguration 实现了 SmartLifecycle, 所以可以执行 start()
 
@@ -63,11 +74,12 @@ urekaServerBootstrap.contextInitialized(EurekaServerInitializerConfiguration.thi
 initEurekaServerContext();
 ->
 // 从 eureka server 其他的注册节点peer拉取同步注册表
-// 也就是cap中没有满足c的地方
-// 因为启动的时候才去拉数据, 所以数据不是强一致性的
-// 后注册的拉不到
+// 也就是cap中没有满足c的地方 -- consistency 一致性 / availability 可用性 / partition tolerance 分区容忍性
+// 因为启动的时候才去拉数据, 所以数据不是强一致性的, 后注册的拉不到
 int registryCount = this.registry.syncUp();  
+
 下一步
+  
 this.registry.openForTraffic(this.applicationInfoManager, registryCount);
 跳转到 PeerAwareInstanceRegistryImpl # openForTraffic()
 ->
@@ -106,6 +118,8 @@ int evictionLimit = registrySize - registrySizeThreshold;
 
 int toEvict = Math.min(expiredLeases.size(), evictionLimit);
 
+----------------------------------------------------------------------------
+
 // 注意, 在 eureka 中使用 Timer (任务剔除时), 是不建议的, 说明:
 使用ScheduledExecutorService代替Timer吧 
 Inspection info: 
@@ -119,9 +133,29 @@ Inspection info:
             //do something
         }
     },initialDelay,period, TimeUnit.HOURS);
+```
 
----------------------------------------------------------------------
+## 优化的相关参数
 
+```java
+  server:
+    // 自我保护, 看自己情况
+    enable-self-preservation: true
+    // 续约阈值，和自我保护机制相关, 设置阈值为0.85
+    renewal-percent-threshold: 0.85
+    // server剔除过期服务的时间间隔, 设置为1s, 快速下线
+    eviction-interval-timer-in-ms: 1000
+    // 是否开启 readOnlyCacheMap 读缓存, 关闭从 readOnlyCacheMap 读注册表
+    // use-read-only-response-cache 默认是true, 可以从yaml点进去, 改成false
+    use-read-only-response-cache: false
+    // readWriteCacheMap 和 readOnlyCacheMap 同步时间间隔
+    // 默认30s, 从 readWriteCacheMap 同步到 readOnlyCacheMap, 提高服务被发现的速度
+    response-cache-update-interval-ms: 1000 
+```
+
+## EurekaServerAutoConfiguration 源码
+
+```java
 EurekaServerAutoConfiguration import EurekaServerInitializerConfiguration 干的事情:
 1. 从peer拉取注册表
 2. 启动定时剔除任务
@@ -146,8 +180,23 @@ initializedResponseCache();
 ->
 responseCache = new ResponseCacheImpl(serverConfig, serverCodecs, this);
 ->
+  注意此处:
+	this.readWriteCacheMap = CacheBuilder.newBuilder().build();
+	其中
+    .build(new CacheLoader<Key, Value>() {
+      @Override
+      public Value load(Key key) throws Exception {
+        if (key.hasRegions()) {
+          Key cloneWithNoRegions = key.cloneWithoutRegions();
+          regionSpecificKeys.put(cloneWithNoRegions, key);
+        }
+        Value value = generatePayload(key);
+        return value;
+      }
+    });
+  
   // 定时更新缓存
-  // readWrite 和 readOnly 之前数据怎么同步?
+  // readWriteCacheMap 和 readOnlyCacheMap 之间数据怎么同步?
   // 在 ResponseCacheImpl 的构造函数启动, 该构造函数从 DefaultEurekaServerContext Bean 中启动
   if (shouldUseReadOnlyResponseCache) {
     timer.schedule(getCacheUpdateTask(),
@@ -155,42 +204,39 @@ responseCache = new ResponseCacheImpl(serverConfig, serverCodecs, this);
                    new Date(((System.currentTimeMillis() / x) * x) + x), x);
   }
 
-  // springcloud 定义标准, eureka 实现了这套标准, springcloud 和原生的 eureka 的一个胶水代码
-  EurekaServerBootstrap 
-  
-  // jersey 框架, 对 eureka server 所有的操作都是通过 web 接口来的
-  FilterRegistrationBean jerseyFilterRegistration() 38min
-  
 
+// springcloud 定义标准, eureka 实现了这套标准, springcloud 和原生的 eureka 的一个胶水代码
+EurekaServerBootstrap 
   
----------------------------------------------------------------------
-
-  server:
-    // 自我保护, 看自己情况
-    enable-self-preservation: true
-    // 续约阈值，和自我保护机制相关, 设置阈值为0.85
-    renewal-percent-threshold: 0.85
-    // server剔除过期服务的时间间隔, 设置为1s, 快速下线
-    eviction-interval-timer-in-ms: 1000
-    // 是否开启readOnly读缓存, 关闭 readOnly
-    // 关闭从readOnly 读注册表
-    // use-read-only-response-cache 默认是true, 可以从yaml点进去, 改成false
-    use-read-only-response-cache: false
-    // readWrite 和 readOnly 同步时间间隔
-    // 默认30s, 从ReadWriteCacheMap同步到, 提高服务被发现的速度
-    response-cache-update-interval-ms: 1000 
-      
- 	
-
-
-  
-eureka实现了ap没有实现c
-eureka 的三级缓存:
-register 注册表
-readWriteMap
-useReadOnlyCache
-断点打到 ApplicationResource # addInstance() -----------------------------------------------
+// jersey 框架, 对 eureka server 所有的操作都是通过 http 请求完成的
+FilterRegistrationBean jerseyFilterRegistration()
 ->
+  server: 
+		1. 接受注册
+    2. 接受心跳
+    3. 下线
+    4. 获取注册列表(服务发现)
+    5. 集群同步 (n 多个resource 当中都会调用集群同步) :
+  类 ApplicationResource 都是用来接受请求的
+      addInstance 注册的
+  InstanceResource
+      renewLease 续约的
+  		statusUpdate 改变状态
+      updateMetadata 改变自定义数据的
+      cancelLease 下线的
+  什么时候会调用集群同步? 后来的服务 都通过 集群同步 给同步到别的 eureka server 上 <主动推送>
+  启动的时候拉取, 没有同步的(启动完才注册的), 就通过集群同步同步过去
+```
+
+
+
+## ApplicationResource 源码
+
+```java
+
+断点打到 ApplicationResource # addInstance()
+->
+// 注意 "true".equals(isReplication); 集群同步的时候 isReplication 是个null, 方法进去第二个参数是false
 registry.register(info, "true".equals(isReplication));
 ->
 InstanceRegistry # register()
@@ -202,6 +248,33 @@ private final ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>> regist
             = new ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>>();
   
 ->
+  	// private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = 
+  	// 																				new ConcurrentLinkedQueue<RecentlyChangedItem>();
+    recentlyChangedQueue.add(new RecentlyChangedItem(lease)); // 失效缓存
+
+		// 集群同步, 此处isReplication传进来是fasle
+    回到 PeerAwareInstanceRegistryImpl # 
+      replicateToPeers(Action.Register, info.getAppName(), info.getId(), info, null, isReplication); 
+    ->
+    PeerAwareInstanceRegistryImpl # replicateToPeers()
+
+        if (isReplication) {
+          numberOfReplicationsLastMin.increment();
+        }
+        // If it is a replication already, do not replicate again as this will create a poison replication
+        if (peerEurekaNodes == Collections.EMPTY_LIST || isReplication) {
+          return;
+        }
+        // case: ServerB 的peer是 ServerA, ServerA 的peer是 ServerC. 示例: ServerB -> ServerA -> ServerA
+        // 服务B 注册到 ServerB, 那么只同步 ServerB 到 ServerA 一次, ServerA 并不会给 ServerC 同步
+        为什么三个地址的时候, defaultZone要写上三个地址?
+        理解: ServerC 也是 ServerB 的 peer, 会从 ServerB 同步到 ServerA 和 ServerC. 
+      
+    // addInstance 返回结果就是204
+    addInstance # return Response.status(204).build();  // 204 to be backwards compatible
+
+下一步 -----------------------------------------------
+  
 invalidateCache(registrant.getAppName(), registrant.getVIPAddress(), registrant.getSecureVipAddress());
 AbstractInstanceRegistry # invalidateCache()
 responseCache.invalidate(appName, vipAddress, secureVipAddress);
@@ -211,16 +284,30 @@ invalidate(new Key(Key.EntityType.VIP, vipAddress, type, v, EurekaAccept.full));
 ->
 readWriteCacheMap.invalidate(key);
 ->
-// 1. 服务注册进 register, 并且让 readWriteCacheMap 失效
+// 服务注册进 register, 并且让 readWriteCacheMap 失效
 LocalCache # invalidate() {
   localCache.remove(key);
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 断点打到 ApplicationResource # getApplication() -----------------------------------------------
   
 取服务 String payLoad = responseCache.get(cacheKey);
 ->
 ResponseCacheImpl # get()
+->
+return get(key, shouldUseReadOnlyResponseCache);
 ->
 Value payload = getValue(key, useReadOnlyCache);
 ->
@@ -243,47 +330,49 @@ Value payload = getValue(key, useReadOnlyCache);
 在 ResponseCacheImpl() 的构造函数中, 
 if (shouldUseReadOnlyResponseCache) {
   timer.schedule(getCacheUpdateTask(),
-                 // 注意这里 除以 和 乘以的 是一个东西 responseCacheUpdateIntervalMs
-                 new Date(((System.currentTimeMillis() / responseCacheUpdateIntervalMs) * responseCacheUpdateIntervalMs)
-                          + responseCacheUpdateIntervalMs),
+                 // 注意这里 除以 和 乘以的 是一个东西 x = responseCacheUpdateIntervalMs
+                 new Date(((System.currentTimeMillis() / x) * x) + x),
                  responseCacheUpdateIntervalMs);
-}
-
-
-
--------------------------------------
-问题总结
-
-cap, 为什么是ap?
-缓存机制, 三级缓存
-  服务注册进来, 先注册进入 registry, 然后 invalidate 使得缓存失效 readWriteCache
-  
-  定时任务, 间隔 .. 时间之后同步
-  这个任务 从readWrite取出来, put 到only 里面去
-  
-  父类load Cache. 掉的时候是 getOrLoad() 方法
-  
-  -----------------------------------
-  
-  
-
+}     
 ```
 
 
 
-```java
-2. 集群间同步
-  从其他peer (application.yaml 文件中的 defaultZone 就是 peer) 拉取注册表
-  
-  自我保护: 
-	服务测算
-   
-    
-    
+## 总结
 
 
-this.registry.openForTraffic(this.applicationInfoManager, registryCount);
 
+```
 
+CAP没有满足C的地方:
+一. eureka 的三级缓存:
+    register 注册表
+    readWriteCacheMap
+    readOnlyCacheMap
+      服务注册进来, 先注册进入 registry, 然后 invalidate 使得缓存失效 readWriteCacheMap
+
+      定时任务, 间隔 .. 时间之后同步
+      这个任务 从 readWriteCacheMap 取出来, put 到 readOnlyCacheMap 里面去
+
+      父类 load Cache. 调的时候是 getOrLoad() 方法
+二. 集群间同步
+  	从其他 peer (application.yaml 文件中的 defaultZone 就是 peer) 拉取注册表
+  	int registryCount = this.registry.syncUp()
+  	
+  	
+--------------------------------------------------------------------------
+  	
+自我保护剔除:
+	1. 开关
+	2. 阈值
+
+服务测算:
+
+server源码:
+	注册
+	剔除
+	
+	
+	1h 14min
 ```
 
