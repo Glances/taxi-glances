@@ -5,7 +5,6 @@
 ![](https://tva1.sinaimg.cn/large/e6c9d24ely1h5hwd7csj7j20uv0kgq4d.jpg)
 
 ```java
-
 @EnableEurekaServer
 ->
 @Import(EurekaServerMarkerConfiguration.class)
@@ -47,12 +46,6 @@ org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
 
 所以: @EnableEurekaServer 和 pom 组成了 EurekaServer
 ```
-
-
-
-
-
-
 
 ## EurekaServerInitializerConfiguration 源码
 
@@ -167,7 +160,8 @@ peerEurekaNodes 封装其他节点的一个bean, 从 int registryCount = this.re
   
 eurekaServerContext()方法中
 ->
-new DefaultEurekaServerContext()
+// !!!!!!!!!!!!!!!!!!!!! important
+new DefaultEurekaServerContext() 
 ->
 @PostConstruct
 initialize()
@@ -204,7 +198,6 @@ responseCache = new ResponseCacheImpl(serverConfig, serverCodecs, this);
                    new Date(((System.currentTimeMillis() / x) * x) + x), x);
   }
 
-
 // springcloud 定义标准, eureka 实现了这套标准, springcloud 和原生的 eureka 的一个胶水代码
 EurekaServerBootstrap 
   
@@ -228,13 +221,48 @@ FilterRegistrationBean jerseyFilterRegistration()
   启动的时候拉取, 没有同步的(启动完才注册的), 就通过集群同步同步过去
 ```
 
-
-
 ## ApplicationResource 源码
 
-```java
+### 服务注册
 
+```java
 断点打到 ApplicationResource # addInstance()
+  
+@POST
+@Consumes({"application/json", "application/xml"})
+public Response addInstance(InstanceInfo info, @HeaderParam(PeerEurekaNode.HEADER_REPLICATION) String isReplication) {}
+
+// eureka 设计的 Lease<InstanceInfo>, 跟续约业务有关 !!!
+1. 服务实例 InstanceInfo info
+2. AbstractInstanceRegistry # register
+	 租约 Lease<InstanceInfo> existingLease = gMap.get(registrant.getId());
+
+收到服务实例, 保存. 
+  自己设计一个服务实例, 有xxx时间: 心跳时间, xxx时间
+  class 服务实例 { 
+    long 到期time; 
+    long 续约time; 
+    long 心跳time; 
+    string 实例字段;
+    // 还有一种方式, 服务实例内有租约
+  }
+
+	eureka 设计(Lease 租约):
+  public class Lease<T> {
+    public static final int DEFAULT_DURATION_IN_SECS = 90;
+    // 服务实例holder. 这样设计的好处: 与eureka 的业务有关
+    // 后面续约是一个频繁的操作, 所以只用更改时间就可以了
+    // 频繁的续约操作不会影响服务实例
+    private T holder; 
+    private long evictionTimestamp;
+    private long registrationTimestamp;
+    private long serviceUpTimestamp;
+    // Make it volatile so that the expiration task would see this quicker
+    private volatile long lastUpdateTimestamp;
+    private long duration;
+  }
+
+  
 ->
 // 注意 "true".equals(isReplication); 集群同步的时候 isReplication 是个null, 方法进去第二个参数是false
 registry.register(info, "true".equals(isReplication));
@@ -287,19 +315,12 @@ readWriteCacheMap.invalidate(key);
 // 服务注册进 register, 并且让 readWriteCacheMap 失效
 LocalCache # invalidate() {
   localCache.remove(key);
-}
+}			
+```
 
+### 获取服务
 
-
-
-
-
-
-
-
-
-
-
+```java
 
 断点打到 ApplicationResource # getApplication() -----------------------------------------------
   
@@ -336,14 +357,95 @@ if (shouldUseReadOnlyResponseCache) {
 }     
 ```
 
+### 续约
+
+```java
+https://github.com/Netflix/eureka/wiki/Eureka-REST-operations
+
+Register new application instance 注册 POST /eureka/v2/apps/appID	
+Send application instance heartbeat 续约 PUT /eureka/v2/apps/appID/instanceID	
+
+断点打到 InstanceResource # renewLease() 续约
+->
+boolean isSuccess = registry.renew(app.getName(), id, isFromReplicaNode);
+->
+InstanceRegistry # renew()
+->
+return super.renew(appName, serverId, isReplication);
+->
+    public boolean renew(final String appName, final String id, final boolean isReplication) {
+        if (super.renew(appName, id, isReplication)) {
+        		// 这里也会调用 replicateToPeers, 同步给集群中其他的peer
+            replicateToPeers(Action.Heartbeat, appName, id, null, null, isReplication);
+            return true;
+        }
+        return false;
+    }
+->
+  先进 super.renew(appName, id, isReplication) ------------------------------------------------------------------------
+  ->
+  leaseToRenew.renew();
+	->
+  // 续约: 只更新 lastUpdateTimestamp 时间
+  lastUpdateTimestamp = System.currentTimeMillis() + duration;
+
+	同理
+    /**
+     * Cancels the lease by updating the eviction time.
+     */
+    public void cancel() {
+        if (evictionTimestamp <= 0) {
+            evictionTimestamp = System.currentTimeMillis();
+        }
+    }
+
+    /**
+     * Mark the service as up. This will only take affect the first time called,
+     * subsequent calls will be ignored.
+     */
+    public void serviceUp() {
+        if (serviceUpTimestamp == 0) {
+            serviceUpTimestamp = System.currentTimeMillis();
+        }
+    }
+
+		注意
+    enum Action {
+        Register, Cancel, Renew
+    };
+			
+```
+
+### 下线
+
+```java
+
+InstanceResource # cancelLease
+->
+boolean isSuccess = registry.cancel(app.getName(), id, "true".equals(isReplication));
+->
+InstanceRegistry # cancel
+->
+    handleCancelation(appName, serverId, isReplication);
+    // 发布下线事件
+    publishEvent(new EurekaInstanceCanceledEvent(this, appName, id, isReplication));
+
+		下一步
+    return super.cancel(appName, serverId, isReplication);
+		->
+    1h52min
+  
+  
+  
+  
+
+```
+
 
 
 ## 总结
 
-
-
-```
-
+```java
 CAP没有满足C的地方:
 一. eureka 的三级缓存:
     register 注册表
@@ -358,21 +460,74 @@ CAP没有满足C的地方:
 二. 集群间同步
   	从其他 peer (application.yaml 文件中的 defaultZone 就是 peer) 拉取注册表
   	int registryCount = this.registry.syncUp()
-  	
+三. P: 网络不好的情况下, 还是可以拉取到注册表调用的
+    A: 高可用
   	
 --------------------------------------------------------------------------
   	
 自我保护剔除:
 	1. 开关
 	2. 阈值
+    
+--------------------------------------------------------------------------
 
 服务测算:
+  参数:
+  eureka:
+  	instance:
+  		lease-renewal-interval-in-seconds: 10 // 默认值30s
+  eureka:
+  	client:
+			// 表示eureka client间隔多久去拉取服务注册信息，默认为30秒，对于api-gateway，如果要迅速获取服务注册状态，可以缩小该值，比如5秒
+    	registry-fetch-interval-seconds: 30 // 默认30
+      
+  可以估算 eureka 每天能承受多大的访问量:
+  20个服务, 每个服务部署5个. eureka client 100 个, 30s 一次心跳
+  1分钟 1个server 200次, 200 * 60 * 24 = 288000 访问量
+  
+  心跳: 向server发送我们还活着 
+  288000 * 2 client 去拉服务
+    
+  TestConcurrentHashMap.java, 测算时间, 大概 113ms 可以处理 10000 次请求 (一个eureka)
+  整个 网约车项目 大概10几万次请求 访问量
+  多个 eureka, 同步,
+	A 高可用
+  P 网络分区, 续约, 
+	自我保护 / 定时剔除, 由于网络问题, 续约不成功, 另一个服务还是能从 eureka server 节点拉到注册表信息的
+  所以网络短了仍然可以被访问, 保证了 P
 
+	  @Test
+    public void concurrent() {
+        ConcurrentHashMap<String, Map<String, Lease<InstanceInfo>>> registry = new ConcurrentHashMap();
+        long start = System.currentTimeMillis();
+
+        for (int i = 0; i < 10000; i++) {
+            InstanceInfo ii = new InstanceInfo("instanceId", "appname", "groupname", "111.11.11", "sid",
+                    new InstanceInfo.PortWrapper(true, 9988),
+                    new InstanceInfo.PortWrapper(false, 9877),
+                    "ssss", "ssss", "ssssss", "12121",
+                    "safasdas", "adss", 1, () -> null, "localhost",
+                    InstanceInfo.InstanceStatus.DOWN, null, null, null,
+                    false, null, System.currentTimeMillis(), System.currentTimeMillis(),
+                    InstanceInfo.ActionType.ADDED, "asgName");
+            ii.setLastDirtyTimestamp(System.currentTimeMillis());
+            Lease<InstanceInfo> lease = new Lease<>(ii, 1);
+            Map<String, Lease<InstanceInfo>> map = new HashMap<>();
+            registry.putIfAbsent("applicationName", map);
+            registry.get("applicationName");
+        }
+
+        long end = System.currentTimeMillis();
+
+        System.out.println(end - start);
+    }
+
+--------------------------------------------------------------------------
+  
 server源码:
-	注册
-	剔除
-	
-	
-	1h 14min
+	注册. 
+	剔除. 长时间没有心跳的服务, eureka server 将它从注册表剔除.
+	续约
+  下线
 ```
 
