@@ -502,7 +502,7 @@ InstanceRegistry # cancel
 
 
 
-### 集群同步
+### 集群同步 - 这里面还有一些问题
 
 ```java
 ApplicationResource # addInstance()
@@ -615,14 +615,62 @@ for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
       --------------------------------------
         问题, 注册服务可用, 但是出现在 unavailable-replicas 当中  
           
-        // 开启互相注册
+        // 1.开启互相注册
         eureka.client.register-with-eureka = true
         eureka.client.fetch-registry = true
         
+        // 2. defaultZone
+        defaultZone: 中 http://localhost:7900/eureka 改为 http://eureka-7900:7900/eureka
+      	
+      	// 3. appName 要一致
+      	spring.application.name = cloud-eureka	
+      
+      	// 4.
+      	eureka.instance.hostname = eureka-7901
         eureka.instance.prefer-ip-address = true
         eureka.instance.ip-address: 127.0.0.1
           
-          1h15min
+        host 文件配置:
+      	127.0.0.1 eureka-7900
+        127.0.0.1 eureka-7901
+        127.0.0.1 eureka-7902
+          
+       --------------------------------------
+          
+          区域 / 可用区的问题: 减少网络延迟
+      
+          region: bj // 北京
+          北京里面包含很多个可用区, 每个区里面有多个服务
+             (包括 eureka client), 
+      			(优先调用本区域的eureka的client), 
+      			(当本区服务不可用再调用别的区域的 eureka client)
+          
+          // eureka server config:
+      		eureka.client.region: bj
+          eureka.client.availability-zones.bj: z1, z2
+          eureka.client.service-url.z1: http://localhost:7911/eureka/, http://localhost:7912/eureka/
+      	  eureka.client.service-url.z2: http://localhost:7921/eureka/, http://localhost:7922/eureka/
+      		
+      		四个配置文件, server port分别是 7911, 7912, 7921, 7922. 其中关于2的服务: 
+      		eureka.client.availability-zones.bj: z2, z1 // 把z2写在前面
+       
+          // eureka client config:
+      		eureka.client.region: bj
+          eureka.client.availability-zones.bj: z1 // 第一个只给区域一注册
+          eureka.client.service-url.z1: http://localhost:7911/eureka/, http://localhost:7912/eureka/
+      	  eureka.client.service-url.z2: http://localhost:7921/eureka/, http://localhost:7922/eureka/
+     
+          eureka.client.prefer-same-zone-eureka: true // 先取相同区域的服务
+          eureka.instance.metadata-map.zone: z1 // 优先从z1取服务
+            
+          一共两个配置文件, 第二个是把上述z1更换为z2
+            
+          --------------------------------------
+            
+            eureka server: 
+      				操作 : 单体 / 高可用 / 多区域
+            	 源码 : 注册 / 下线 / 心跳 / 剔除 / 拉取注册表 / 集群同步
+           
         
 ```
 
@@ -716,5 +764,17 @@ server源码:
   下线
   集群间同步
   拉取注册表
+```
+
+
+
+
+
+## eureka client
+
+
+
+```
+549 1h39min50s
 ```
 
