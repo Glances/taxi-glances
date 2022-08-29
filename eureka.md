@@ -155,6 +155,8 @@ EurekaServerAutoConfiguration import EurekaServerInitializerConfiguration 干的
 3. 自我保护
 
 其中 EurekaController 是服务管理后台使用的
+  EurekaController # status()
+  其中 statusInfo 属性
   
 peerEurekaNodes 封装其他节点的一个bean, 从 int registryCount = this.registry.syncUp(); 拉取节点时候需要用到
   
@@ -426,19 +428,202 @@ boolean isSuccess = registry.cancel(app.getName(), id, "true".equals(isReplicati
 ->
 InstanceRegistry # cancel
 ->
-    handleCancelation(appName, serverId, isReplication);
+    1. handleCancelation(appName, serverId, isReplication);
     // 发布下线事件
     publishEvent(new EurekaInstanceCanceledEvent(this, appName, id, isReplication));
 
-		下一步
-    return super.cancel(appName, serverId, isReplication);
+    2. return super.cancel(appName, serverId, isReplication);
 		->
-    1h52min
-  
-  
-  
-  
+    if (super.cancel(appName, id, isReplication)) {
+      // 下线, 向集群同步
+    	replicateToPeers(Action.Cancel, appName, id, null, null, isReplication);
+			return true;
+    }
+		return false;
+		->
+    return internalCancel(appName, id, isReplication);
+		->
+    // 下线, 也是修改 evictionTimestamp 时间
+		leaseToCancel.cancel();
 
+    // 加入下线的队列
+    recentlyChangedQueue.add(new RecentlyChangedItem(leaseToCancel));
+
+```
+
+### 拉取注册表
+
+```java
+
+
+对外提供拉取的两个方法, 区别 全量拉取/增量拉取:
+	1. ApplicationsResource # getContainers // localhost:7900/eureka/apps 全量拉取
+     ->
+     // 属性 entityName = ALL_APPS
+     Key cacheKey = new Key(Key.EntityType.Application, ResponseCacheImpl.ALL_APPS, 
+                            keyType, CurrentRequestVersion.get(), EurekaAccept.fromString(eurekaAccept), regions);
+     response = Response.ok(responseCache.getGZIP(cacheKey))
+       .header(HEADER_CONTENT_ENCODING, HEADER_GZIP_VALUE)
+       .header(HEADER_CONTENT_TYPE, returnMediaType)
+       .build();
+		 ->
+     进去 getGZIP() 方法
+     Value payload = getValue(key, shouldUseReadOnlyResponseCache);
+		 ->
+   	 ResponseCacheImpl # getValue(key = "ALL_APPS", boolean useReadOnlyCache)
+     // 如果有的话 all-apps(包含两个requestType不同的 xml/json), apps-delta, 服务名
+     // private final ConcurrentMap<Key, Value> readOnlyCacheMap = new ConcurrentHashMap<Key, Value>();
+     final Value currentPayload = readOnlyCacheMap.get(key);
+       
+      
+  2. @Path("delta") 增量拉取 
+     ApplicationsResource # getContainerDifferential() // // localhost:7900/eureka/apps/delta 增量拉取
+     ->
+  	 // 属性 entityName = ALL_APPS_DELTA
+     Key cacheKey = new Key(Key.EntityType.Application, ResponseCacheImpl.ALL_APPS, 
+                            keyType, CurrentRequestVersion.get(), EurekaAccept.fromString(eurekaAccept), regions);
+     
+     response = Response.ok(responseCache.getGZIP(cacheKey))
+       .header(HEADER_CONTENT_ENCODING, HEADER_GZIP_VALUE)
+       .header(HEADER_CONTENT_TYPE, returnMediaType)
+       .build();
+     ->
+    
+    什么时候从 delta 读到 all 里面去?
+    recentlyChangedQueue, delta 都从这里面取
+  
+    
+    
+  
+  
+```
+
+
+
+
+
+### 集群同步
+
+```java
+ApplicationResource # addInstance()
+->
+registry.register(info, "true".equals(isReplication));
+->
+PeerAwareInstanceRegistryImpl # register # 
+// 集群同步. 
+// 参数 isReplication 为 false: 传过来是 "true".equals(isReplication) 
+replicateToPeers(Action.Register, info.getAppName(), info.getId(), info, null, isReplication);
+->
+// If it is a replication already, do not replicate again as this will create a poison replication
+// 如果 isReplication 为 true, 也不继续同步
+if (peerEurekaNodes == Collections.EMPTY_LIST || isReplication) {
+  return;
+}
+
+// 第一次进 isReplication 为 false, 所以会走 replicateInstanceActionsToPeers, 向其他节点同步
+for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
+  // If the url represents this host, do not replicate to yourself.
+  if (peerEurekaNodes.isThisMyUrl(node.getServiceUrl())) {
+    continue;
+  }
+  replicateInstanceActionsToPeers(action, appName, id, info, newStatus, node);
+}
+->
+  switch (action) {
+    case Cancel:
+      node.cancel(appName, id);
+      break;
+    case Heartbeat:
+      InstanceStatus overriddenStatus = overriddenInstanceStatusMap.get(id);
+      infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+      node.heartbeat(appName, id, infoFromRegistry, overriddenStatus, false);
+      break;
+    case Register:
+      node.register(info);
+      break;
+    case StatusUpdate:
+      infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+      node.statusUpdate(appName, id, newStatus, infoFromRegistry);
+      break;
+    case DeleteStatusOverride:
+      infoFromRegistry = getInstanceByAppAndId(appName, id, false);
+      node.deleteStatusOverride(appName, id, infoFromRegistry);
+      break;
+      
+   // 第一个节点注册进来: null, "true".equals(isReplication) 后面那个值为false, 所以会走replicateInstanceActionsToPeers
+   // 注意在 register 方法里面 new InstanceReplicationTask() 时候最后一个参数 写死为 true
+   public void register(final InstanceInfo info) throws Exception {
+     long expiryTime = System.currentTimeMillis() + getLeaseRenewalOf(info);
+     batchingDispatcher.process(
+       taskId("register", info),
+       new InstanceReplicationTask(targetHost, Action.Register, info, null, true) {
+         public EurekaHttpResponse<Void> execute() {
+           return replicationClient.register(info);
+         }
+       },
+       expiryTime
+     );
+   }
+   // 第二次进来 isReplication 为 true, "true".equals(isReplication) 也为true, 在 if(isReplication) return 了, 就不会再向其他节点同步了
+
+      
+  ---------------------------------------------
+    
+    
+    同理, 续约走 switch - case 的 Heartbeat
+      
+    取消 new InstanceReplicationTask() 没传, 构造函数中 this.replicateInstanceInfo = false;
+      
+    集群同步:
+      1. 注册register: 不会传递. // new InstanceReplicationTask 时 replicateInstanceInfo 为 true
+      2. 续约heartbeat: 一直同步. 所有集群. // new InstanceReplicationTask 时 replicateInstanceInfo 为 false
+      3. 下线: 和2一样 // new InstanceReplicationTask 时 replicateInstanceInfo 默认为 false
+      4. 剔除: 不同步, 因为所有的 eureka server 都有自己的剔除. 没有同步这项业务
+      		EurekaServerInitializerConfiguration # start()
+          ->
+          eurekaServerBootstrap.contextInitialized(EurekaServerInitializerConfiguration.this.servletContext);
+      		->
+          initEurekaServerContext();
+      		->
+          this.registry.openForTraffic(this.applicationInfoManager, registryCount);
+      		->
+          InstanceRegistry # openForTraffic()
+          super.openForTraffic(applicationInfoManager, count == 0 ? this.defaultOpenForTrafficCount : count);
+      		->
+          PeerAwareInstanceRegistryImpl # openForTraffic()
+          ->
+          super.postInit();
+      		->
+          evictionTaskRef.set(new EvictionTask());
+      		->
+          evict(compensationTimeMs); // 剔除
+      		->
+          internalCancel(appName, id, false); // 不知道是不是此处 参数 isReplication 为 false
+
+
+      
+      
+      	eureka 遇到的问题:
+        生产环境: 服务重启时, 先停服, 再手动触发下线
+        注意: 虽然停服了, 但是还在注册中心挂着, 别人一调用就错了
+        如果在生产环境中, 先下线, 再停服, 很有可能下线白下. 举例: 不停服, 下线了过30s 又有了
+        
+        debug 源码: 发现又自动续约了
+        client 每隔 30s 就会向 server 自动续约一次
+          
+          
+      --------------------------------------
+        问题, 注册服务可用, 但是出现在 unavailable-replicas 当中  
+          
+        // 开启互相注册
+        eureka.client.register-with-eureka = true
+        eureka.client.fetch-registry = true
+        
+        eureka.instance.prefer-ip-address = true
+        eureka.instance.ip-address: 127.0.0.1
+          
+          1h15min
+        
 ```
 
 
@@ -460,12 +645,12 @@ CAP没有满足C的地方:
 二. 集群间同步
   	从其他 peer (application.yaml 文件中的 defaultZone 就是 peer) 拉取注册表
   	int registryCount = this.registry.syncUp()
-三. P: 网络不好的情况下, 还是可以拉取到注册表调用的
+三. P: 网络不好的情况下, 还是可以拉取到注册表调用的. 服务还可以调用
     A: 高可用
   	
 --------------------------------------------------------------------------
   	
-自我保护剔除:
+自我保护剔除:优化参数
 	1. 开关
 	2. 阈值
     
@@ -526,8 +711,10 @@ CAP没有满足C的地方:
   
 server源码:
 	注册. 
-	剔除. 长时间没有心跳的服务, eureka server 将它从注册表剔除.
+	剔除(本质也是下线). 长时间没有心跳的服务, eureka server 将它从注册表剔除.
 	续约
   下线
+  集群间同步
+  拉取注册表
 ```
 
