@@ -157,6 +157,45 @@ EurekaServerAutoConfiguration import EurekaServerInitializerConfiguration 干的
 其中 EurekaController 是服务管理后台使用的
   EurekaController # status()
   其中 statusInfo 属性
+  statusInfo = new StatusResource().getStatusInfo();
+	->
+    // peerEurekaNodes.getPeerEurekaNodes() 循环 节点的每个同伴
+    for (PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
+      if (replicaHostNames.length() > 0) {
+        replicaHostNames.append(", ");
+      }
+      replicaHostNames.append(node.getServiceUrl());
+      // isReplicaAvailable() 判断条件
+      if (isReplicaAvailable(node.getServiceUrl())) {
+        upReplicas.append(node.getServiceUrl()).append(',');
+        upReplicasCount++;
+      } else {
+        downReplicas.append(node.getServiceUrl()).append(',');
+      }
+    }
+
+    builder.add("registered-replicas", replicaHostNames.toString());
+    builder.add("available-replicas", upReplicas.toString());
+    builder.add("unavailable-replicas", downReplicas.toString());
+		->
+    private boolean isReplicaAvailable(String url) {
+      try {
+        Application app = registry.getApplication(myAppName, false);
+        if (app == null) {
+          return false;
+        }
+        for (InstanceInfo info : app.getInstances()) {
+          // isInstanceURL() 判断条件
+          if (peerEurekaNodes.isInstanceURL(url, info)) {
+            return true;
+          }
+        }
+      } catch (Throwable e) {
+        logger.error("Could not determine if the replica is available ", e);
+      }
+      return false;
+    }
+  
   
 peerEurekaNodes 封装其他节点的一个bean, 从 int registryCount = this.registry.syncUp(); 拉取节点时候需要用到
   
@@ -613,13 +652,17 @@ for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
           
           
       --------------------------------------
+        search: unavailable-replicas
         问题, 注册服务可用, 但是出现在 unavailable-replicas 当中  
+        参见 EurekaController 逻辑
           
         // 1.开启互相注册
+        // 如果为false, 不向eureka注册, 出现在 unavailable-replicas 中. isReplicaAvailable() 方法中 app == null
         eureka.client.register-with-eureka = true
         eureka.client.fetch-registry = true
         
         // 2. defaultZone
+        // 写 ip 也可以, 但是 我写的同伴的地址 和 收到的注册表中同伴的地址 是一样的, 证明服务是可用的<更优>
         defaultZone: 中 http://localhost:7900/eureka 改为 http://eureka-7900:7900/eureka
       	
       	// 3. appName 要一致
@@ -770,11 +813,267 @@ server源码:
 
 
 
-## eureka client
+# eureka client
 
+
+
+```java
+eureka client 客户端: api-passenger
+
+// 与 server 交互的配置
+eureka.client.registry-fetch-interval-seconds: 30 // 拉取间隔时间
+// 自身实例的信息
+eureka.instance.lease-renewal-interval-in-seconds: 30 // 心跳间隔时间
+  
+以下两张图 spring.factories 注入客户端需要用的bean
+```
+
+![image-20220830105333371](https://tva1.sinaimg.cn/large/e6c9d24egy1h5ols9zh62j20rm0b075x.jpg)
+
+![image-20220830105356826](https://tva1.sinaimg.cn/large/e6c9d24egy1h5olsn500pj21h00gm0xz.jpg)
+
+
+
+## EurekaClientAutoConfiguration
+
+```java
+
+
+@Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties
+// 与server 交互的配置 EurekaClientConfig
+@ConditionalOnClass(EurekaClientConfig.class)
+@Import(DiscoveryClientOptionalArgsConfiguration.class)
+// 默认为true, 与 server 的 Maker 开关不同, client的开关为 eureka.client.enabled
+@ConditionalOnProperty(value = "eureka.client.enabled", matchIfMissing = true)
+@ConditionalOnDiscoveryEnabled
+@AutoConfigureBefore({ NoopDiscoveryClientAutoConfiguration.class,
+		CommonsClientAutoConfiguration.class, ServiceRegistryAutoConfiguration.class })
+@AutoConfigureAfter(name = {
+		"org.springframework.cloud.autoconfigure.RefreshAutoConfiguration",
+		"org.springframework.cloud.netflix.eureka.EurekaDiscoveryClientConfiguration",
+		"org.springframework.cloud.client.serviceregistry.AutoServiceRegistrationAutoConfiguration" })
+public class EurekaClientAutoConfiguration {}
+
+
+EurekaDiscoveryClientConfigServiceAutoConfiguration
+  
+  
+// spring 定义的一套标准  
+org.springframework.cloud.client.discovery.DiscoveryClient
+// Netflix eureka 实现了它
+org.springframework.cloud.netflix.eureka.EurekaDiscoveryClient
+// consul 也实现了
+  
+  
+@ImplementedBy(DiscoveryClient.class)
+public interface EurekaClient extends LookupService{
+  // 注册健康检查
+  public void registerHealthCheck(HealthCheckHandler healthCheckHandler);
+  // 注册事件监听
+  public void registerEventListener(EurekaEventListener eventListener);
+}
+
+
+@Singleton
+public class DiscoveryClient implements EurekaClient {
+  
+  // 构造函数
+  @Inject
+  DiscoveryClient(ApplicationInfoManager applicationInfoManager, EurekaClientConfig config, 
+                  AbstractDiscoveryClientOptionalArgs args,
+                  Provider<BackupRegistry> backupRegistryProvider, EndpointRandomizer endpointRandomizer) {
+    
+    // 禁用 eureka client 功能, 不拉取也不注册
+    // 同配置 eureka.client.enabled: false
+    if (!config.shouldRegisterWithEureka() && !config.shouldFetchRegistry()) {
+      
+    } else {
+       // 心跳定时任务
+       heartbeatExecutor = new ThreadPoolExecutor(
+         1, 
+         clientConfig.getHeartbeatExecutorThreadPoolSize(), 
+         0, 
+         TimeUnit.SECONDS, 
+         new SynchronousQueue<Runnable>(), 
+         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-HeartbeatExecutor-%d").setDaemon(true).build()
+       );  // use direct handoff
+      
+       // 缓存刷新, eureka client 优化, 拉取注册表更及时一些
+       cacheRefreshExecutor = new ThreadPoolExecutor(
+         1, 
+         clientConfig.getCacheRefreshExecutorThreadPoolSize(), 
+         0, 
+         TimeUnit.SECONDS, 
+         new SynchronousQueue<Runnable>(),
+         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-CacheRefreshExecutor-%d").setDaemon(true).build()
+       );  // use direct handoff
+    }
+    
+    // fetchRegistry() 拉取注册表
+    if (clientConfig.shouldFetchRegistry() && !fetchRegistry(false)) {
+      fetchRegistryFromBackup();
+    }
+    
+    if (clientConfig.shouldRegisterWithEureka() && clientConfig.shouldEnforceRegistrationAtInit()) {
+      try {
+        // 注册
+        if (!register() ) {
+          throw new IllegalStateException("Registration error at startup. Invalid server response.");
+        }
+      } catch (Throwable th) {
+        logger.error("Registration error at startup: {}", th.getMessage());
+        throw new IllegalStateException(th);
+      }
+    }
+    
+    // finally, init the schedule tasks (e.g. cluster resolvers, heartbeat, instanceInfo replicator, fetch
+    // 初始化, 包含三个任务, 1. 心跳定时任务 2. 缓存刷新, 拉取注册表更及时一些
+    // 3. 状态改变监听 statusChangeListener 如果自身服务有变化, 重新注册
+    // 第三点 和 EurekaClient 中的 registerHealthCheck() 与 registerEventListener() 有关
+    initScheduledTasks();
+    
+  } // DiscoveryClient 构造函数
+  
+  // 销毁之前, 下线
+  @PreDestroy
+  @Override
+  public synchronized void shutdown() {
+  }
+}
+总结: 注册 / 拉取 / 下线 / 三个定时任务 / unavailable ???
 
 
 ```
-549 1h39min50s
+
+
+
+```java
+
+
+// LoadingCache Google的一个本地缓存框架 guava
+private final LoadingCache<Key, Value> readWriteCacheMap;
+
+this.readWriteCacheMap =
+  CacheBuilder.newBuilder().initialCapacity(serverConfig.getInitialCapacityOfResponseCache())
+  .expireAfterWrite(serverConfig.getResponseCacheAutoExpirationInSeconds(), TimeUnit.SECONDS)
+  .removalListener(new RemovalListener<Key, Value>() {
+    @Override
+    public void onRemoval(RemovalNotification<Key, Value> notification) {
+      Key removedKey = notification.getKey();
+      if (removedKey.hasRegions()) {
+        Key cloneWithNoRegions = removedKey.cloneWithoutRegions();
+        regionSpecificKeys.remove(cloneWithNoRegions, removedKey);
+      }
+    }
+  })
+  .build(new CacheLoader<Key, Value>() {
+    @Override
+    public Value load(Key key) throws Exception {
+      if (key.hasRegions()) {
+        Key cloneWithNoRegions = key.cloneWithoutRegions();
+        regionSpecificKeys.put(cloneWithNoRegions, key);
+      }
+      // 如果找不到值, 会走 generatePayload()
+      Value value = generatePayload(key);
+      return value;
+    }
+  });
+
+->
+  switch (key.getEntityType()) {
+    case Application:
+      // 全量查找
+      if (ALL_APPS.equals(key.getName())) {
+      // 增量查找
+      } else if (ALL_APPS_DELTA.equals(key.getName())) {
+        payload = getPayLoad(key, registry.getApplicationDeltas()); 中
+        registry.getApplicationDeltas()
+        ->
+        // 如果是增量的话, 就从 
+        // private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = 
+        // 																								  new ConcurrentLinkedQueue<RecentlyChangedItem>();
+        // 当中取
+        // 什么时候过期?
+        Iterator<RecentlyChangedItem> iter = this.recentlyChangedQueue.iterator();
+        
+      } else {
+      }
+      break;
+    case VIP:
+    case SVIP:
+    default:
+  }
+
+
+
+recentlyChangedQueue add 的地方
+ApplicationResource # addInstance()
+->
+PeerAwareInstanceRegistryImpl # register()
+super.register(info, leaseDuration, isReplication);
+->
+AbstractInstanceRegistry # register()
+// 注册 / 心跳 往里面 add 数据
+recentlyChangedQueue.add(new RecentlyChangedItem(lease));
+
+
+// 构造函数
+protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClientConfig clientConfig, ServerCodecs serverCodecs) {
+  this.serverConfig = serverConfig;
+  this.clientConfig = clientConfig;
+  this.serverCodecs = serverCodecs;
+  this.recentCanceledQueue = new CircularQueue<Pair<Long, String>>(1000);
+  this.recentRegisteredQueue = new CircularQueue<Pair<Long, String>>(1000);
+
+  this.renewsLastMin = new MeasuredRate(1000 * 60 * 1);
+
+  // 定时任务
+  this.deltaRetentionTimer.schedule(getDeltaRetentionTask(),
+                                    serverConfig.getDeltaRetentionTimerIntervalInMs(),
+                                    serverConfig.getDeltaRetentionTimerIntervalInMs());
+}
+->
+    private TimerTask getDeltaRetentionTask() {
+        return new TimerTask() {
+
+            @Override
+            public void run() {
+                Iterator<RecentlyChangedItem> it = recentlyChangedQueue.iterator();
+                while (it.hasNext()) {
+                  	// serverConfig.getRetentionTimeInMSInDeltaQueue() 默认 3min
+                    // 所以 recentlyChangedQueue 保留最近 3min 的注册信息
+                    // 实际用的时候, 心跳是 5min(一般设置为秒级, 这种情况不会). 3min失效. 最近一次增量拉取拉取不到
+                    if (it.next().getLastUpdateTime() <
+                            System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
+                      	// recentlyChangedQueue 过期
+                        it.remove();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+        };
+    }
+
+
+
+
+
+49min.....
+
+
+```
+
+
+
+![05-eureka-client-1](https://tva1.sinaimg.cn/large/e6c9d24egy1h5p08x9lccj21270u0gpp.jpg)
+
+```
+
+
+
+
 ```
 
