@@ -820,9 +820,9 @@ server源码:
 ```java
 eureka client 客户端: api-passenger
 
-// 与 server 交互的配置
+// eureka.client: 与 server 交互的配置
 eureka.client.registry-fetch-interval-seconds: 30 // 拉取间隔时间
-// 自身实例的信息
+// eureka.instance: 自身实例的信息
 eureka.instance.lease-renewal-interval-in-seconds: 30 // 心跳间隔时间
   
 以下两张图 spring.factories 注入客户端需要用的bean
@@ -859,98 +859,15 @@ public class EurekaClientAutoConfiguration {}
 EurekaDiscoveryClientConfigServiceAutoConfiguration
   
   
-// spring 定义的一套标准  
-org.springframework.cloud.client.discovery.DiscoveryClient
-// Netflix eureka 实现了它
-org.springframework.cloud.netflix.eureka.EurekaDiscoveryClient
-// consul 也实现了
-  
-  
-com.netflix.discovery.EurekaClient
-@ImplementedBy(DiscoveryClient.class)
-public interface EurekaClient extends LookupService{
-  // 注册健康检查
-  public void registerHealthCheck(HealthCheckHandler healthCheckHandler);
-  // 注册事件监听
-  public void registerEventListener(EurekaEventListener eventListener);
-}
-
-
-@Singleton
-public class DiscoveryClient implements EurekaClient {
-  
-  // 构造函数
-  @Inject
-  DiscoveryClient(ApplicationInfoManager applicationInfoManager, EurekaClientConfig config, 
-                  AbstractDiscoveryClientOptionalArgs args,
-                  Provider<BackupRegistry> backupRegistryProvider, EndpointRandomizer endpointRandomizer) {
-    
-    // 禁用 eureka client 功能, 不拉取也不注册
-    // 同配置 eureka.client.enabled: false
-    if (!config.shouldRegisterWithEureka() && !config.shouldFetchRegistry()) {
-      
-    } else {
-       // 心跳定时任务
-       heartbeatExecutor = new ThreadPoolExecutor(
-         1, 
-         clientConfig.getHeartbeatExecutorThreadPoolSize(), 
-         0, 
-         TimeUnit.SECONDS, 
-         new SynchronousQueue<Runnable>(), 
-         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-HeartbeatExecutor-%d").setDaemon(true).build()
-       );  // use direct handoff
-      
-       // 缓存刷新, eureka client 优化, 拉取注册表更及时一些
-       cacheRefreshExecutor = new ThreadPoolExecutor(
-         1, 
-         clientConfig.getCacheRefreshExecutorThreadPoolSize(), 
-         0, 
-         TimeUnit.SECONDS, 
-         new SynchronousQueue<Runnable>(),
-         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-CacheRefreshExecutor-%d").setDaemon(true).build()
-       );  // use direct handoff
-    }
-    
-    // fetchRegistry() 拉取注册表
-    if (clientConfig.shouldFetchRegistry() && !fetchRegistry(false)) {
-      fetchRegistryFromBackup();
-    }
-    
-    if (clientConfig.shouldRegisterWithEureka() && clientConfig.shouldEnforceRegistrationAtInit()) {
-      try {
-        // 注册
-        if (!register() ) {
-          throw new IllegalStateException("Registration error at startup. Invalid server response.");
-        }
-      } catch (Throwable th) {
-        logger.error("Registration error at startup: {}", th.getMessage());
-        throw new IllegalStateException(th);
-      }
-    }
-    
-    // finally, init the schedule tasks (e.g. cluster resolvers, heartbeat, instanceInfo replicator, fetch
-    // 初始化, 包含三个任务, 1. 心跳定时任务 2. 缓存刷新, 拉取注册表更及时一些
-    // 3. 状态改变监听 statusChangeListener 如果自身服务有变化, 重新注册
-    // 第三点 和 EurekaClient 中的 registerHealthCheck() 与 registerEventListener() 有关
-    initScheduledTasks();
-    
-  } // DiscoveryClient 构造函数
-  
-  // 销毁之前, 下线
-  @PreDestroy
-  @Override
-  public synchronized void shutdown() {
-  }
-}
-总结: 注册 / 拉取 / 下线 / 三个定时任务 / unavailable ???
-
-
 ```
 
 
 
+## recentlyChangedQueue 说明
+
 ```java
 
+ResponseCacheImpl # ResponseCacheImpl() // 构造函数中
 
 // LoadingCache Google的一个本地缓存框架 guava
 private final LoadingCache<Key, Value> readWriteCacheMap;
@@ -980,7 +897,6 @@ this.readWriteCacheMap =
       return value;
     }
   });
-
 ->
   switch (key.getEntityType()) {
     case Application:
@@ -991,13 +907,11 @@ this.readWriteCacheMap =
         payload = getPayLoad(key, registry.getApplicationDeltas()); 中
         registry.getApplicationDeltas()
         ->
-        // 如果是增量的话, 就从 
+        // 如果是增量的话, 就从 recentlyChangedQueue 当中取
         // private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = 
         // 																								  new ConcurrentLinkedQueue<RecentlyChangedItem>();
-        // 当中取
-        // 什么时候过期?
+        // recentlyChangedQueue 中的元素 什么时候过期?
         Iterator<RecentlyChangedItem> iter = this.recentlyChangedQueue.iterator();
-        
       } else {
       }
       break;
@@ -1015,11 +929,12 @@ PeerAwareInstanceRegistryImpl # register()
 super.register(info, leaseDuration, isReplication);
 ->
 AbstractInstanceRegistry # register()
-// 注册 / 心跳 往里面 add 数据
+// 注册 / 心跳, 往里面 add 数据 源码263行
 recentlyChangedQueue.add(new RecentlyChangedItem(lease));
 
 
-// 构造函数
+
+// AbstractInstanceRegistry 构造函数
 protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClientConfig clientConfig, ServerCodecs serverCodecs) {
   this.serverConfig = serverConfig;
   this.clientConfig = clientConfig;
@@ -1044,7 +959,7 @@ protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClient
                 while (it.hasNext()) {
                   	// serverConfig.getRetentionTimeInMSInDeltaQueue() 默认 3min
                     // 所以 recentlyChangedQueue 保留最近 3min 的注册信息
-                    // 实际用的时候, 心跳是 5min(一般设置为秒级, 这种情况不会). 3min失效. 最近一次增量拉取拉取不到
+                    // 如果用的时候, 心跳是 5min(一般设置为秒级, 这种情况不会). 3min失效. 最近一次增量拉取拉取不到
                     if (it.next().getLastUpdateTime() <
                             System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
                       	// recentlyChangedQueue 过期
@@ -1058,38 +973,38 @@ protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClient
         };
     }
 
-
-
-
-
-
-
-
 ```
 
 
 
 
 
-## EurekaClient
+## EurekaClient 启动流程
 
 ![05-eureka-client-1](https://tva1.sinaimg.cn/large/e6c9d24egy1h5p08x9lccj21270u0gpp.jpg)
 
 ```java
 
-
 // spring 定义的一套标准  
 org.springframework.cloud.client.discovery.DiscoveryClient
 // Netflix eureka 实现了它
 org.springframework.cloud.netflix.eureka.EurekaDiscoveryClient
+public class EurekaDiscoveryClient implements DiscoveryClient {}
+// consul 也实现了
   
   
-com.netflix.discovery.EurekaClient
+// com.netflix.discovery.EurekaClient
 @ImplementedBy(DiscoveryClient.class)
-public interface EurekaClient extends LookupService {}
+public interface EurekaClient extends LookupService {
+  // 注册健康检查
+  public void registerHealthCheck(HealthCheckHandler healthCheckHandler);
+  // 注册事件监听
+  public void registerEventListener(EurekaEventListener eventListener);
+}
 ->
+// com.netflix.discovery.DiscoveryClient 实现了 EurekaClient 上面接口, 包含启动流程, 关键!!!!!
 @Singleton
-public class DiscoveryClient implements EurekaClient {} // 同上面笔记 DiscoveryClient 的构造函数, 关键, 包含启动流程
+public class DiscoveryClient implements EurekaClient {}
 
 // 断点打到 DiscoveryClient 最下面一个构造函数
 // 如果 eureka.client.enabled = false, 就不会走到该构造函数中
@@ -1102,6 +1017,7 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
                 AbstractDiscoveryClientOptionalArgs args, 
                 Provider<BackupRegistry> backupRegistryProvider, 
                 EndpointRandomizer endpointRandomizer) {}
+
 // 启动过程:
 1. 封装和server交互的配置
 2. 初始化三个任务, 发送心跳 / 缓存刷新 / 状态改变监听(状态改变了-按需要注册)
@@ -1109,24 +1025,38 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
 // 运行:
 就是运行这三个任务
 // 消亡: discoveryClient # shutdown()
+  // 销毁之前, 下线
+  public synchronized void shutdown() {}
   ->
-  unregister();
+  // If APPINFO was registered
+  if (applicationInfoManager != null
+      && clientConfig.shouldRegisterWithEureka()
+      && clientConfig.shouldUnregisterOnShutdown()) {
+    applicationInfoManager.setInstanceStatus(InstanceStatus.DOWN);
+    unregister(); // 走这个
+  }
 	->
   // 也是走http 请求
-  EurekaHttpResponse<Void> httpResponse = eurekaTransport.registrationClient.cancel(instanceInfo.getAppName(), instanceInfo.getId());
+  EurekaHttpResponse<Void> httpResponse = eurekaTransport.registrationClient
+    													.cancel(instanceInfo.getAppName(), instanceInfo.getId());
 	->
   AbstractJerseyEurekaHttpClient # cancel()
   ->
   response = resourceBuilder.delete(ClientResponse.class);
+
+------------------------------------------------------------------------------
+  
+  	DiscoveryClient 启动流程源码:
   
   			// 是不是去 server 拉取注册表
         if (config.shouldFetchRegistry()) {
         } else {
         }
 
-				// 不向 eureka 注册 也不拉取, 直接return. 不作为 eureka 的客户端
+				// 禁用 eureka client 功能, 不向 eureka 注册 && 不拉取, 直接return. 不作为 eureka 的客户端
+    		// 同配置 eureka.client.enabled: false
 				if (!config.shouldRegisterWithEureka() && !config.shouldFetchRegistry()) {
-          return;  // no need to setup up an network tasks and we are done
+          return;  // no need to setup up an network tasks and we are done 不需要设置网络任务，我们就完成了
         }
 				
 				// 同 eureka 交互的一个东西
@@ -1284,7 +1214,7 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
 
 
 
-
+## defaultZone 配置个数问题
 
 ```java
 question:
@@ -1306,9 +1236,77 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 实际工作中, 要把 defaultZone 后面的url随机打乱, 不让某一个server 的压力过大 (从同一个server拉取注册表)
   
 任何一个server, 都得把对方所有的同伴都配上. eureka 优化: 我 / 我的同伴
-  
+```
+
+
+
+## 总结
+
+
+
+![06-注册中心总结](https://tva1.sinaimg.cn/large/e6c9d24egy1h5q3o63ccrj20s71hs0wn.jpg)
+
+
+
+
+
 
 
 ```
 
-![06-注册中心总结](https://tva1.sinaimg.cn/large/e6c9d24egy1h5q3o63ccrj20s71hs0wn.jpg)
+
+    
+    
+
+       // 心跳定时任务
+       heartbeatExecutor = new ThreadPoolExecutor(
+         1, 
+         clientConfig.getHeartbeatExecutorThreadPoolSize(), 
+         0, 
+         TimeUnit.SECONDS, 
+         new SynchronousQueue<Runnable>(), 
+         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-HeartbeatExecutor-%d").setDaemon(true).build()
+       );  // use direct handoff
+      
+       // 缓存刷新, eureka client 优化, 拉取注册表更及时一些
+       cacheRefreshExecutor = new ThreadPoolExecutor(
+         1, 
+         clientConfig.getCacheRefreshExecutorThreadPoolSize(), 
+         0, 
+         TimeUnit.SECONDS, 
+         new SynchronousQueue<Runnable>(),
+         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-CacheRefreshExecutor-%d").setDaemon(true).build()
+       );  // use direct handoff
+    }
+    
+    // fetchRegistry() 拉取注册表
+    if (clientConfig.shouldFetchRegistry() && !fetchRegistry(false)) {
+      fetchRegistryFromBackup();
+    }
+    
+    if (clientConfig.shouldRegisterWithEureka() && clientConfig.shouldEnforceRegistrationAtInit()) {
+      try {
+        // 注册
+        if (!register() ) {
+          throw new IllegalStateException("Registration error at startup. Invalid server response.");
+        }
+      } catch (Throwable th) {
+        logger.error("Registration error at startup: {}", th.getMessage());
+        throw new IllegalStateException(th);
+      }
+    }
+    
+    // finally, init the schedule tasks (e.g. cluster resolvers, heartbeat, instanceInfo replicator, fetch
+    // 初始化, 包含三个任务, 1. 心跳定时任务 2. 缓存刷新, 拉取注册表更及时一些
+    // 3. 状态改变监听 statusChangeListener 如果自身服务有变化, 重新注册
+    // 第三点 和 EurekaClient 中的 registerHealthCheck() 与 registerEventListener() 有关
+    initScheduledTasks();
+    
+  } // DiscoveryClient 构造函数
+  
+ 
+
+
+
+```
+
