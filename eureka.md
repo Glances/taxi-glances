@@ -1,6 +1,6 @@
-# eureka 生产优化
+# Eureka 生产优化
 
-## 引入 eureka server
+## 引入 EurekaServer
 
 ![](https://tva1.sinaimg.cn/large/e6c9d24ely1h5hwd7csj7j20uv0kgq4d.jpg)
 
@@ -165,7 +165,7 @@ EurekaServerAutoConfiguration import EurekaServerInitializerConfiguration 干的
         replicaHostNames.append(", ");
       }
       replicaHostNames.append(node.getServiceUrl());
-      // isReplicaAvailable() 判断条件
+      // isReplicaAvailable() 判断条件, 决定哪个节点装入 "unavailable-replicas"
       if (isReplicaAvailable(node.getServiceUrl())) {
         upReplicas.append(node.getServiceUrl()).append(',');
         upReplicasCount++;
@@ -261,6 +261,127 @@ FilterRegistrationBean jerseyFilterRegistration()
   什么时候会调用集群同步? 后来的服务 都通过 集群同步 给同步到别的 eureka server 上 <主动推送>
   启动的时候拉取, 没有同步的(启动完才注册的), 就通过集群同步同步过去
 ```
+
+## readWriteCacheMap & recentlyChangedQueue 说明
+
+```java
+ResponseCacheImpl # ResponseCacheImpl() // 构造函数中
+
+// LoadingCache Google的一个本地缓存框架 guava
+private final LoadingCache<Key, Value> readWriteCacheMap;
+
+this.readWriteCacheMap =
+  CacheBuilder.newBuilder().initialCapacity(serverConfig.getInitialCapacityOfResponseCache())
+  .expireAfterWrite(serverConfig.getResponseCacheAutoExpirationInSeconds(), TimeUnit.SECONDS)
+  .removalListener(new RemovalListener<Key, Value>() {
+    @Override
+    public void onRemoval(RemovalNotification<Key, Value> notification) {
+      Key removedKey = notification.getKey();
+      if (removedKey.hasRegions()) {
+        Key cloneWithNoRegions = removedKey.cloneWithoutRegions();
+        regionSpecificKeys.remove(cloneWithNoRegions, removedKey);
+      }
+    }
+  })
+  .build(new CacheLoader<Key, Value>() {
+    @Override
+    public Value load(Key key) throws Exception {
+      if (key.hasRegions()) {
+        Key cloneWithNoRegions = key.cloneWithoutRegions();
+        regionSpecificKeys.put(cloneWithNoRegions, key);
+      }
+      // 如果找不到值, 会走 generatePayload()
+      Value value = generatePayload(key);
+      return value;
+    }
+  });
+->
+  switch (key.getEntityType()) {
+    case Application:
+      // 全量查找
+      if (ALL_APPS.equals(key.getName())) {
+      // 增量查找
+      } else if (ALL_APPS_DELTA.equals(key.getName())) {
+        payload = getPayLoad(key, registry.getApplicationDeltas()); 中
+        registry.getApplicationDeltas()
+        ->
+        // 如果是增量的话, 就从 recentlyChangedQueue 当中取
+        // private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = 
+        // 																								  new ConcurrentLinkedQueue<RecentlyChangedItem>();
+        // recentlyChangedQueue 中的元素 什么时候过期?
+        Iterator<RecentlyChangedItem> iter = this.recentlyChangedQueue.iterator();
+      } else {
+      }
+      break;
+    case VIP:
+    case SVIP:
+    default:
+  }
+
+
+
+recentlyChangedQueue add 的地方
+ApplicationResource # addInstance()
+->
+PeerAwareInstanceRegistryImpl # register()
+super.register(info, leaseDuration, isReplication);
+->
+AbstractInstanceRegistry # register()
+// 注册 / 心跳, 往里面 add 数据 源码263行
+recentlyChangedQueue.add(new RecentlyChangedItem(lease));
+
+
+
+// AbstractInstanceRegistry 构造函数
+protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClientConfig clientConfig, ServerCodecs serverCodecs) {
+  this.serverConfig = serverConfig;
+  this.clientConfig = clientConfig;
+  this.serverCodecs = serverCodecs;
+  this.recentCanceledQueue = new CircularQueue<Pair<Long, String>>(1000);
+  this.recentRegisteredQueue = new CircularQueue<Pair<Long, String>>(1000);
+
+  this.renewsLastMin = new MeasuredRate(1000 * 60 * 1);
+
+  // 定时任务
+  this.deltaRetentionTimer.schedule(getDeltaRetentionTask(),
+                                    serverConfig.getDeltaRetentionTimerIntervalInMs(),
+                                    serverConfig.getDeltaRetentionTimerIntervalInMs());
+}
+->
+    private TimerTask getDeltaRetentionTask() {
+        return new TimerTask() {
+
+            @Override
+            public void run() {
+                Iterator<RecentlyChangedItem> it = recentlyChangedQueue.iterator();
+                while (it.hasNext()) {
+                  	// serverConfig.getRetentionTimeInMSInDeltaQueue() 默认 3min
+                    // 所以 recentlyChangedQueue 保留最近 3min 的注册信息
+                    // 如果用的时候, 心跳是 5min(一般设置为秒级, 这种情况不会). 3min失效. 最近一次增量拉取拉取不到
+                    if (it.next().getLastUpdateTime() <
+                            System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
+                      	// recentlyChangedQueue 过期
+                        it.remove();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+        };
+    }
+
+
+-------------------------
+  
+  参考 下线, 也是加入这个队列 recentlyChangedQueue
+  
+  
+```
+
+
+
+
 
 ## ApplicationResource 源码
 
@@ -532,8 +653,6 @@ InstanceRegistry # cancel
     recentlyChangedQueue, delta 都从这里面取
   
     
-    
-  
   
 ```
 
@@ -541,7 +660,7 @@ InstanceRegistry # cancel
 
 
 
-### 集群同步 - 这里面还有一些问题
+### 集群同步
 
 ```java
 ApplicationResource # addInstance()
@@ -642,6 +761,22 @@ for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
 
       
       
+            
+          
+            
+
+           
+        
+```
+
+
+
+
+
+## EurekaServer 相关问题
+
+```java
+
       	eureka 遇到的问题:
         生产环境: 服务重启时, 先停服, 再手动触发下线
         注意: 虽然停服了, 但是还在注册中心挂着, 别人一调用就错了
@@ -707,14 +842,6 @@ for (final PeerEurekaNode node : peerEurekaNodes.getPeerEurekaNodes()) {
           eureka.instance.metadata-map.zone: z1 // 优先从z1取服务
             
           一共两个配置文件, 第二个是把上述z1更换为z2
-            
-          --------------------------------------
-            
-            eureka server: 
-      				操作 : 单体 / 高可用 / 多区域
-            	 源码 : 注册 / 下线 / 心跳 / 剔除 / 拉取注册表 / 集群同步
-           
-        
 ```
 
 
@@ -807,6 +934,12 @@ server源码:
   下线
   集群间同步
   拉取注册表
+    
+    
+    
+                eureka server: 
+      				操作 : 单体 / 高可用 / 多区域
+            	 源码 : 注册 / 下线 / 心跳 / 剔除 / 拉取注册表 / 集群同步
 ```
 
 
@@ -863,118 +996,6 @@ EurekaDiscoveryClientConfigServiceAutoConfiguration
 
 
 
-## recentlyChangedQueue 说明
-
-```java
-
-ResponseCacheImpl # ResponseCacheImpl() // 构造函数中
-
-// LoadingCache Google的一个本地缓存框架 guava
-private final LoadingCache<Key, Value> readWriteCacheMap;
-
-this.readWriteCacheMap =
-  CacheBuilder.newBuilder().initialCapacity(serverConfig.getInitialCapacityOfResponseCache())
-  .expireAfterWrite(serverConfig.getResponseCacheAutoExpirationInSeconds(), TimeUnit.SECONDS)
-  .removalListener(new RemovalListener<Key, Value>() {
-    @Override
-    public void onRemoval(RemovalNotification<Key, Value> notification) {
-      Key removedKey = notification.getKey();
-      if (removedKey.hasRegions()) {
-        Key cloneWithNoRegions = removedKey.cloneWithoutRegions();
-        regionSpecificKeys.remove(cloneWithNoRegions, removedKey);
-      }
-    }
-  })
-  .build(new CacheLoader<Key, Value>() {
-    @Override
-    public Value load(Key key) throws Exception {
-      if (key.hasRegions()) {
-        Key cloneWithNoRegions = key.cloneWithoutRegions();
-        regionSpecificKeys.put(cloneWithNoRegions, key);
-      }
-      // 如果找不到值, 会走 generatePayload()
-      Value value = generatePayload(key);
-      return value;
-    }
-  });
-->
-  switch (key.getEntityType()) {
-    case Application:
-      // 全量查找
-      if (ALL_APPS.equals(key.getName())) {
-      // 增量查找
-      } else if (ALL_APPS_DELTA.equals(key.getName())) {
-        payload = getPayLoad(key, registry.getApplicationDeltas()); 中
-        registry.getApplicationDeltas()
-        ->
-        // 如果是增量的话, 就从 recentlyChangedQueue 当中取
-        // private ConcurrentLinkedQueue<RecentlyChangedItem> recentlyChangedQueue = 
-        // 																								  new ConcurrentLinkedQueue<RecentlyChangedItem>();
-        // recentlyChangedQueue 中的元素 什么时候过期?
-        Iterator<RecentlyChangedItem> iter = this.recentlyChangedQueue.iterator();
-      } else {
-      }
-      break;
-    case VIP:
-    case SVIP:
-    default:
-  }
-
-
-
-recentlyChangedQueue add 的地方
-ApplicationResource # addInstance()
-->
-PeerAwareInstanceRegistryImpl # register()
-super.register(info, leaseDuration, isReplication);
-->
-AbstractInstanceRegistry # register()
-// 注册 / 心跳, 往里面 add 数据 源码263行
-recentlyChangedQueue.add(new RecentlyChangedItem(lease));
-
-
-
-// AbstractInstanceRegistry 构造函数
-protected AbstractInstanceRegistry(EurekaServerConfig serverConfig, EurekaClientConfig clientConfig, ServerCodecs serverCodecs) {
-  this.serverConfig = serverConfig;
-  this.clientConfig = clientConfig;
-  this.serverCodecs = serverCodecs;
-  this.recentCanceledQueue = new CircularQueue<Pair<Long, String>>(1000);
-  this.recentRegisteredQueue = new CircularQueue<Pair<Long, String>>(1000);
-
-  this.renewsLastMin = new MeasuredRate(1000 * 60 * 1);
-
-  // 定时任务
-  this.deltaRetentionTimer.schedule(getDeltaRetentionTask(),
-                                    serverConfig.getDeltaRetentionTimerIntervalInMs(),
-                                    serverConfig.getDeltaRetentionTimerIntervalInMs());
-}
-->
-    private TimerTask getDeltaRetentionTask() {
-        return new TimerTask() {
-
-            @Override
-            public void run() {
-                Iterator<RecentlyChangedItem> it = recentlyChangedQueue.iterator();
-                while (it.hasNext()) {
-                  	// serverConfig.getRetentionTimeInMSInDeltaQueue() 默认 3min
-                    // 所以 recentlyChangedQueue 保留最近 3min 的注册信息
-                    // 如果用的时候, 心跳是 5min(一般设置为秒级, 这种情况不会). 3min失效. 最近一次增量拉取拉取不到
-                    if (it.next().getLastUpdateTime() <
-                            System.currentTimeMillis() - serverConfig.getRetentionTimeInMSInDeltaQueue()) {
-                      	// recentlyChangedQueue 过期
-                        it.remove();
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-        };
-    }
-
-```
-
 
 
 
@@ -1009,11 +1030,9 @@ public class DiscoveryClient implements EurekaClient {}
 // 断点打到 DiscoveryClient 最下面一个构造函数
 // 如果 eureka.client.enabled = false, 就不会走到该构造函数中
 
-// applicationInfoManager: 应用的信息管理器
-// config: 和 server 交互的配置
 @Inject
-DiscoveryClient(ApplicationInfoManager applicationInfoManager, 
-                EurekaClientConfig config, 
+DiscoveryClient(ApplicationInfoManager applicationInfoManager, // 应用的信息管理器
+                EurekaClientConfig config, // 和 server 交互的配置
                 AbstractDiscoveryClientOptionalArgs args, 
                 Provider<BackupRegistry> backupRegistryProvider, 
                 EndpointRandomizer endpointRandomizer) {}
@@ -1058,15 +1077,36 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
 				if (!config.shouldRegisterWithEureka() && !config.shouldFetchRegistry()) {
           return;  // no need to setup up an network tasks and we are done 不需要设置网络任务，我们就完成了
         }
+
+        // 心跳定时任务
+        heartbeatExecutor = new ThreadPoolExecutor(
+          1, 
+          clientConfig.getHeartbeatExecutorThreadPoolSize(), 
+          0, 
+          TimeUnit.SECONDS, 
+          new SynchronousQueue<Runnable>(), 
+          new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-HeartbeatExecutor-%d").setDaemon(true).build()
+        );  // use direct handoff
+
+        // 缓存刷新, eureka client 优化, 拉取注册表更及时一些
+        cacheRefreshExecutor = new ThreadPoolExecutor(
+          1, 
+          clientConfig.getCacheRefreshExecutorThreadPoolSize(), 
+          0, 
+          TimeUnit.SECONDS, 
+          new SynchronousQueue<Runnable>(),
+          new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-CacheRefreshExecutor-%d").setDaemon(true).build()
+        );  // use direct handoff
 				
 				// 同 eureka 交互的一个东西
 				eurekaTransport = new EurekaTransport();
 
+			  // fetchRegistry() 拉取注册表
         if (clientConfig.shouldFetchRegistry() && !fetchRegistry(false)) {
           fetchRegistryFromBackup();
         }
-				>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-				// 前面为 true, 进去 fetchRegistry() 方法
+				>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+				// 前面为 clientConfig.shouldFetchRegistry() = true, 进去 fetchRegistry() 方法
 				if (clientConfig.shouldDisableDelta()
                     || (!Strings.isNullOrEmpty(clientConfig.getRegistryRefreshSingleVipAddress()))
                     || forceFullRegistryFetch
@@ -1095,7 +1135,7 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
           return getApplicationsInternal("apps/", regions);
         }
 
-				<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+				<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
           
           if (clientConfig.shouldRegisterWithEureka() && clientConfig.shouldEnforceRegistrationAtInit()) {
             try {
@@ -1110,6 +1150,9 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
           }
 
 				// finally, init the schedule tasks (e.g. cluster resolvers, heartbeat, instanceInfo replicator, fetch
+        // 初始化, 包含三个任务, 1. 心跳定时任务 2. 缓存刷新, 拉取注册表更及时一些
+        // 3. 状态改变监听 statusChangeListener 如果自身服务有变化, 重新注册
+        // 第三点 和 EurekaClient 中的 registerHealthCheck() 与 registerEventListener() 有关
         initScheduledTasks();
 				1. cacheRefreshTask 缓存刷新
           cacheRefreshTask = new TimedSupervisorTask(
@@ -1127,6 +1170,7 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
             }
           }
           ->
+          // 这里又调用了 fetchRegistry()
          	boolean success = fetchRegistry(remoteRegionsModified);
         2. 定时心跳
           heartbeatTask = new TimedSupervisorTask(
@@ -1162,11 +1206,12 @@ DiscoveryClient(ApplicationInfoManager applicationInfoManager,
                 } else {
                   logger.info("Saw local status change event {}", statusChangeEvent);
                 }
-                // 123123123123123
+                // OnDemand 按需
                 instanceInfoReplicator.onDemandUpdate();
               }
             };
             
+            // OnDemand 按需
             if (clientConfig.shouldOnDemandUpdateStatusChange()) {
               applicationInfoManager.registerStatusChangeListener(statusChangeListener);
             }
@@ -1246,67 +1291,4 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 
 ![06-注册中心总结](https://tva1.sinaimg.cn/large/e6c9d24egy1h5q3o63ccrj20s71hs0wn.jpg)
 
-
-
-
-
-
-
-```
-
-
-    
-    
-
-       // 心跳定时任务
-       heartbeatExecutor = new ThreadPoolExecutor(
-         1, 
-         clientConfig.getHeartbeatExecutorThreadPoolSize(), 
-         0, 
-         TimeUnit.SECONDS, 
-         new SynchronousQueue<Runnable>(), 
-         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-HeartbeatExecutor-%d").setDaemon(true).build()
-       );  // use direct handoff
-      
-       // 缓存刷新, eureka client 优化, 拉取注册表更及时一些
-       cacheRefreshExecutor = new ThreadPoolExecutor(
-         1, 
-         clientConfig.getCacheRefreshExecutorThreadPoolSize(), 
-         0, 
-         TimeUnit.SECONDS, 
-         new SynchronousQueue<Runnable>(),
-         new ThreadFactoryBuilder().setNameFormat("DiscoveryClient-CacheRefreshExecutor-%d").setDaemon(true).build()
-       );  // use direct handoff
-    }
-    
-    // fetchRegistry() 拉取注册表
-    if (clientConfig.shouldFetchRegistry() && !fetchRegistry(false)) {
-      fetchRegistryFromBackup();
-    }
-    
-    if (clientConfig.shouldRegisterWithEureka() && clientConfig.shouldEnforceRegistrationAtInit()) {
-      try {
-        // 注册
-        if (!register() ) {
-          throw new IllegalStateException("Registration error at startup. Invalid server response.");
-        }
-      } catch (Throwable th) {
-        logger.error("Registration error at startup: {}", th.getMessage());
-        throw new IllegalStateException(th);
-      }
-    }
-    
-    // finally, init the schedule tasks (e.g. cluster resolvers, heartbeat, instanceInfo replicator, fetch
-    // 初始化, 包含三个任务, 1. 心跳定时任务 2. 缓存刷新, 拉取注册表更及时一些
-    // 3. 状态改变监听 statusChangeListener 如果自身服务有变化, 重新注册
-    // 第三点 和 EurekaClient 中的 registerHealthCheck() 与 registerEventListener() 有关
-    initScheduledTasks();
-    
-  } // DiscoveryClient 构造函数
-  
- 
-
-
-
-```
 
