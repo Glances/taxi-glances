@@ -1292,3 +1292,13 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 ![06-注册中心总结](https://tva1.sinaimg.cn/large/e6c9d24egy1h5q3o63ccrj20s71hs0wn.jpg)
 
 
+
+# 验证码
+
+![07-乘客发送验证码-qps提升](https://tva1.sinaimg.cn/large/e6c9d24ely1h5sg5km3opj20u010s417.jpg)![]()
+
+
+
+
+
+21min
