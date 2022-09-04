@@ -1295,10 +1295,19 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 
 # 验证码
 
-![07-乘客发送验证码-qps提升](https://tva1.sinaimg.cn/large/e6c9d24ely1h5sg5km3opj20u010s417.jpg)![]()
+![07-乘客发送验证码-qps提升](https://tva1.sinaimg.cn/large/e6c9d24ely1h5sg5km3opj20u010s417.jpg)
 
+```java
+小tips: 生产中不能用快照 SNAPSHOT 版本 (如果SNAP有变化 每次都会拉最新的 没经过测试就直接使用)
+  
+写impl 一个好处: 
+	1. 如果遇到必须使用动态代理的实现方式, 就最好写接口+实现impl ---> 美团点评cat 必须用 接口+实现类 的方式
+  2. 遇到多实例的抽象出来
+    
+随机验证码:
+	1. (Math.random()+"").substring(2,8); // 都是6位. Math.random() 生成 0.266128937128937, 取2~8位. 问题在
+	2. String.valueOf(new Random().nextInt(1000000)); // 会有不是6位的情况
+	
+  
+```
 
-
-
-
-21min
