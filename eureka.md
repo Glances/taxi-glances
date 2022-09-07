@@ -1305,9 +1305,12 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
   2. 遇到多实例的抽象出来
     
 随机验证码:
-	1. (Math.random()+"").substring(2,8); // 都是6位. Math.random() 生成 0.266128937128937, 取2~8位. 问题在
+	1. (Math.random()+"").substring(2,8); // 都是6位. Math.random() 生成 0.266128937128937, 取2~8位. 问题在于效率, 时间耗费多
 	2. String.valueOf(new Random().nextInt(1000000)); // 会有不是6位的情况
+	数字的运算比字符串操作节省时间:
+		String code = String.valueOf((int)((Math.random()*9+1)*Math.pow(10,5)));
+		
 	
-  
+  1
 ```
 
