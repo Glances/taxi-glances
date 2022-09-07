@@ -1297,6 +1297,10 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 
 ![07-乘客发送验证码-qps提升](https://tva1.sinaimg.cn/large/e6c9d24ely1h5sg5km3opj20u010s417.jpg)
 
+
+
+![08-提升qps技巧 减少响应时间](https://tva1.sinaimg.cn/large/e6c9d24ely1h5y56nx0nbj20v60u0t9q.jpg)
+
 ```java
 小tips: 生产中不能用快照 SNAPSHOT 版本 (如果SNAP有变化 每次都会拉最新的 没经过测试就直接使用)
   
@@ -1309,8 +1313,55 @@ protected <R> EurekaHttpResponse<R> execute(RequestExecutor<R> requestExecutor) 
 	2. String.valueOf(new Random().nextInt(1000000)); // 会有不是6位的情况
 	数字的运算比字符串操作节省时间:
 		String code = String.valueOf((int)((Math.random()*9+1)*Math.pow(10,5)));
-		
 	
-  1
+常用的, 不变的, 用缓存: 短信模板
+IO瓶颈: 网络IO / 磁盘IO
+  
+估算线程数:
+	16核, 应该开几个线程?
+  公式: 线程数 = cpu 可用核数 / 1-阻塞系数
+  阻塞系数: io密集型接近1, 计算密集型接近0
+  
+提高qps: 
+	1. 提高并发数 
+    1.1 多线程
+    1.2 增加各种连接数 mysql redis tomcat 线程池
+    1.3 服务无状态, 便于横向拓展. 扩机器
+    1.4 让服务能力对等. (serverUrl: 打乱顺序)
+  2. 减少响应时间
+    2.1 异步 (最终一致性, 不需要及时). 流量削峰
+    2.2 缓存. (减少db读取, 减少磁盘io, 读多, 写少)
+    2.3 数据库优化
+    2.4 多的数据, 分批次返回
+    2.5 减少调用链
+    2.6 长连接. 不要让客户端去轮询, 减少网络延时
+    
+  business operation support system
+  websocket / sse / netty
+    
+短信模板, 基本不修改, 只新增
+查找短信模板, 为什么不用redis?
+    1. 减少网络io
+    2. 数据量少
+如何估算数据量?
+    1. 将模板写入txt文件, 看大小 81B
+    2. 81B * 10, 10条短信模板≈1kb
+    3. 1w个短信模板 ≈ 1mb
+50m ~ 100m, 就可以放在redis了, 主要看数据量
+    
+是先存redis 还是先发短信? 
+    如果用户拿着验证码来校验, 结果没有.
+    所以是先存再发
+
+登陆完成之后, JWT生成的token, 要存在服务端里吗 ?
+  	如果客户端违约操作, server要主动剔除一个账号下线, 需要存token (注意是server主动剔除) (接入的<极光>长链接)
+    
+插入 ServicePassengerUserInfo 的时候, 可以用 分布式锁 / 唯一索引
+生成 token 的时候，如果要服务端控制，要把它存到 redis 中，再设置过期时间
+    
+    
+ 1 hh
 ```
+
+
 
