@@ -1348,6 +1348,7 @@ IO瓶颈: 网络IO / 磁盘IO
     2. 81B * 10, 10条短信模板≈1kb
     3. 1w个短信模板 ≈ 1mb
 50m ~ 100m, 就可以放在redis了, 主要看数据量
+也可以用 @Cache 注解
     
 是先存redis 还是先发短信? 
     如果用户拿着验证码来校验, 结果没有.
@@ -1355,12 +1356,35 @@ IO瓶颈: 网络IO / 磁盘IO
 
 登陆完成之后, JWT生成的token, 要存在服务端里吗 ?
   	如果客户端违约操作, server要主动剔除一个账号下线, 需要存token (注意是server主动剔除) (接入的<极光>长链接)
+    实时剔除必须使用长链接
+    不实时, 可以请求一次再踢掉
     
 插入 ServicePassengerUserInfo 的时候, 可以用 分布式锁 / 唯一索引
-生成 token 的时候，如果要服务端控制，要把它存到 redis 中，再设置过期时间
     
-    
- 1 hh
+PassengerUserServiceImpl:
+// 生成 token 的时候，如果要服务端控制，要把它存到 redis 中，再设置过期时间
+String token = JwtUtil.createToken(passengerId+"", new Date());
+// 存入redis，设置过期时间。
+BoundValueOperations<String, String> stringStringBoundValueOperations = redisTemplate.boundValueOps(
+				RedisKeyPrefixConstant.PASSENGER_LOGIN_TOKEN_APP_KEY_PRE + passengerId);
+stringStringBoundValueOperations.set(token,30,TimeUnit.DAYS);
+
+// 支持微信和app端同时登录, 通过 redis key 来区分是 微信端 还是 小程序端登录.
+// 一个app + 一个手机号 只能用一个token
+// token 过期可以用 redis, 也可以用自己的过期时间. JwtUtil.createToken # setExpiration(issueDate + xxx)
+public static final String PASSENGER_LOGIN_TOKEN_APP_KEY_PRE = "passenger_login_token_app_";
+public static final String PASSENGER_LOGIN_TOKEN_WEIXIN_KEY_PRE = "passenger_login_token_weixin_";
+
+jwt不能强制让 token 失效
+放 header
+  
+网关 com.mashibing.cloudzuul
+spring boot 三步骤: pom yaml 启动类
+鉴权 filter public class AuthFilter extends ZuulFilter
+  
+  1h
+
+
 ```
 
 
