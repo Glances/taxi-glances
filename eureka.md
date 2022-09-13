@@ -1380,12 +1380,55 @@ jwt不能强制让 token 失效
   
 网关 com.mashibing.cloudzuul
 spring boot 三步骤: pom yaml 启动类
-鉴权 filter public class AuthFilter extends ZuulFilter
-  
-  1h
+鉴权 filter: public class AuthFilter extends ZuulFilter
+		// 注意: 不往下走，还走剩下的过滤器，但是不向后面的服务转发。
+		requestContext.setSendZuulResponse(false);
+		// 不走以后的过滤器怎么操作?
+		should filter 方法 return false
+    // 使用 filterOrder 保证顺序
 
+  // 该过滤器是否生效
+	@Override
+	public boolean shouldFilter() {
+		// 获取上下文
+		RequestContext requestContext = RequestContext.getCurrentContext();
+    // 不走后面过滤器方法一: 
+    // 		前面 requestContext.setSendZuulResponse(false); 被设置为 false (建议用这种, 全局贯穿)
+		if (!requestContext.sendZuulResponse()){
+			return false;
+		}
+    // 不走后面过滤器方法二: 
+    //		上一个 filter 设置 ifContinue 为false. requestContext.set("ifContinue",false);
+//		boolean ifContinue = (boolean) requestContext.get("ifContinue");
+//		if (ifContinue) {
+//			return true;
+//		} else {
+//			return false;
+//		}
+		return true;
+	}
+
+预约打车, 需要客户端和服务端同步时间
+  服务端的时间通过运维保证
+  移动互联网必须保证客户端和服务端时间一致<通过接口>
+  
+算价格 bigDecimal. 把 rmb 改成了<分>为单位<价格的精度问题>
+  
+计算价格: 多线程. 两个 future, 再join 一下
+
+  
 
 ```
 
 
+
+# 553 计价时序图设计
+
+```java
+
+
+
+
+
+```
 
