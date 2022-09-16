@@ -1426,6 +1426,48 @@ spring boot 三步骤: pom yaml 启动类
 
 ```java
 
+预估计价需求
+
+添加计费规则
+file:///Users/wangxinze/Movies/taxi/taxi-glances/%E4%B9%8B%E5%89%8D%E7%9A%84%E6%96%87%E4%BB%B6%E5%A4%B9/%E9%9C%80%E6%B1%82/boso%E8%AE%A1%E4%BB%B7/index.html#g=1&p=%E6%B7%BB%E5%8A%A0_%E8%AE%A1%E8%B4%B9%E8%A7%84%E5%88%99%E3%80%901101%E3%80%91
+该计费规则已经存在 -- 主键(唯一键)
+隐含服务 -- 地图(高德/百度)
+  
+网约车需要电子围栏 lbs.amap.com -> 开发支持 -> WEB服务API -> 地理围栏 (区域限定, 在某个区域内叫车)
+
+map-service FenceController 接口
+  	isInFence 接口 是否在围栏内
+  	meta 创建围栏
+  	search 搜索围栏
+  
+ConfigController 配置, 都统一让服务端管理. 
+  eg: 高德给服务端的唯一ID. if 配置有变化, 只改服务端就可以了
+	产品的锅开发背, 前端的锅后端背
+    
+DispatchController 高德, 在半径里面派单, 乘客叫司机
+    找乘客位置 geoHash
+    
+VehicleController
+    vehicle 接口, upload car, 上传位置信息
+
+坐标需要矫正吗? 轨迹纠偏, 在隧道里上传的位置坐标不准, 解决不了
+    
+distanceController
+    /distance 接口, 取路径规划, 两点之间有多远
+    
+GeoController
+    /geo/cityCode, 根据经度纬度返回城市码
+    
+orderController
+    /order 订单. 订单信息实时上传给高德
+    
+
+    
+
+  50min
+
+
+
 
 
 
