@@ -1461,10 +1461,30 @@ GeoController
 orderController
     /order 订单. 订单信息实时上传给高德
     
-
+RouteController 路线controller
+    /distance 获取走了多少距离
+    /points 高德上给系统打的点(经纬度)
     
 
-  50min
+
+    BigDecimal 2.1 + 1.2 计算错误
+    2.3 不对, 2.1 不对, 2.5 是对的 
+    
+    二进制的数, 0 1, 表示 0.5 精确的分成两份
+    表示 0.1. 只能向0.1无限靠近, 不能靠近0.1     0.5, 0.25, 0.125 ...
+      
+   	2.1 转成二进制数 10...
+    十进制转二进制, 小数部分*2, 顺取整
+    小数点后面的数:
+		0.1*2 = 0.2 0
+    0.2*2 = 0.4 0
+    0.4*2 = 0.8 0
+    0.8*2 = 1.6 1
+    0.6*2 = 1.2 1
+    0.2*2 = 0.4 0
+    
+    
+    
 
 
 
@@ -1474,3 +1494,18 @@ orderController
 
 ```
 
+
+
+计价服务
+
+![09-计价](https://tva1.sinaimg.cn/large/e6c9d24ely1h6dbqj7peyj20u01e3n1w.jpg)
+
+![09-计价类图](https://tva1.sinaimg.cn/large/e6c9d24ely1h6dbqinyxtj20gv0ifq38.jpg)
+
+
+
+
+
+
+
+1h38min
