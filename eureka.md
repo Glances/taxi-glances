@@ -1483,15 +1483,24 @@ RouteController 路线controller
     0.6*2 = 1.2 1
     0.2*2 = 0.4 0
     
+drive meter 驾驶参数, 行驶相关的参数
+		包含 order, rule
+		类似 eureka 中 Lease<instanceInfo>的设计. 操作比较频繁的属性, 放在外面就不用get里面了
+      
+    requestTask 类似剔除任务, 主要的计算任务
+      
+    valuationRequestTask 主要的计算方法都在里面
     
     
-
-
-
-
-
-
-
+rule 规则
+    KeyRule: 城市名称+服务类型+渠道名称+车辆级别
+    BaseRule: 基础计费
+    tagPrice: 标签费用 没开发出来就倒闭了
+      
+DiscountCondition 动态调价
+      
+priceAdjustment 调价使用
+		
 ```
 
 
@@ -1505,7 +1514,3 @@ RouteController 路线controller
 
 
 
-
-
-
-1h38min
