@@ -1526,7 +1526,17 @@ priceAdjustment 调价使用
 
 
 
+# 派单
 
+![10-派单设计](https://tva1.sinaimg.cn/large/008vxvgGgy1h7979pok3ij30sz1w8mzm.jpg)
+
+
+
+派单逻辑图
+
+
+
+![派单逻辑图](https://tva1.sinaimg.cn/large/008vxvgGgy1h79lbdr1bej315t0u0428.jpg)
 
 
 
