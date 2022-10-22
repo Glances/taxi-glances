@@ -1507,26 +1507,15 @@ priceAdjustment 调价使用
 
 计价服务
 
+
+
+上面是计价的时序图, 下面是派单的时序图
+
 ![09-计价](https://tva1.sinaimg.cn/large/e6c9d24ely1h6dbqj7peyj20u01e3n1w.jpg)
 
 ![09-计价类图](https://tva1.sinaimg.cn/large/e6c9d24ely1h6dbqinyxtj20gv0ifq38.jpg)
 
-
-
-```
-
-
-计价....
-
-```
-
-
-
-![09-计价](https://tva1.sinaimg.cn/large/008vxvgGly1h70evdv5nuj30u01e3n1w.jpg)
-
-
-
-# 派单
+# 554 派单
 
 ![10-派单设计](https://tva1.sinaimg.cn/large/008vxvgGgy1h7979pok3ij30sz1w8mzm.jpg)
 
@@ -1539,6 +1528,219 @@ priceAdjustment 调价使用
 ![派单逻辑图](https://tva1.sinaimg.cn/large/008vxvgGgy1h79lbdr1bej315t0u0428.jpg)
 
 
+
+后台系统prd:
+
+file:///Users/wangxinze/Movies/taxi/taxi-glances/%E4%B9%8B%E5%89%8D%E7%9A%84%E6%96%87%E4%BB%B6%E5%A4%B9/%E9%9C%80%E6%B1%82/1101boss%E9%9C%80%E6%B1%82-01-0927/index.html#g=1&p=%E5%BC%BA%E6%B4%BE%E8%AE%BE%E7%BD%AE
+
+
+
+订单号: 分布式id
+
+# 555 订单状态流转
+
+
+
+![11-sse-订单状态](https://tva1.sinaimg.cn/large/008vxvgGly1h7alttrvhmj30u01qv0xw.jpg)
+
+
+
+司机通过boss后台添加, 绑定车辆
+三级等保: 需要脱密, 对称加密就可以了, 大数据分析
+
+派单: 极光 9999% / netty / websocket / spring cloud 中 sse server sent event 
+
+
+
+派单设计
+如果用mq, 一个司机一个topic, 可以实现; 多个司机监听一个topic, 无法实现
+用redis做, key: "业务" + driverId value: 要发的订单的信息
+
+redis 发布订阅 -- 阻塞的
+bpop 阻塞的pop
+redis的mq
+
+无线网络的变化, 
+长链接会关联 channel
+通过用户身份的token 去关联到之前的 channel
+
+订单: 付款之后才生成订单
+对于网约车, 先享受服务, 后面订单才会变成已付款
+
+分布式锁 / 分布式id
+多个司机, 抢单请求, 打到多台服务器上, 抢同一张订单. 让多台服务器访问一个共同的地方 共享redis/db
+
+gps信息包含: 经纬度 高度 行进方向 速度
+
+订单状态, 状态机
+订单状态的改变是由什么改变的? -- 操作前状态 + 事件
+eg: 接到乘客之前都可以取消, 之后都无法取消
+if 之前取消, 都把状态update 成9
+有一个日志, 记录状态的转变. 从1取消变成91, 从2取消变成92, ... 可以看出什么原因取消的, 便于以后分析
+状态只能前进, 不能后退
+
+设计模式: 如果代码逻辑简单, 没必要用设计模式
+
+结束行程还需要走一遍计价. 数据库2个计价: 一个预估, 一个实际
+
+# 556 支付流程-时序图-灰度场景
+
+
+
+支付参数准备:
+	1. 核对金额
+	1. 设置回调参数(支付宝会回调我们的系统)
+
+
+
+seata 分布式事务/柔性事务
+if 队列宕机, 定时任务发送不成功, 下次再发
+if 消费者消费不成功, 有一个ACK确认过程, 继续消费
+if 重复消费, 事务id作为主键, 同样消息过来会插入失败
+
+![12-支付](https://tva1.sinaimg.cn/large/008vxvgGly1h7aq0xv50mj30so13xacw.jpg)
+
+
+
+
+
+保证分布式事务
+
+![image-20221020110619953](https://tva1.sinaimg.cn/large/008vxvgGly1h7bkrcfwhtj311c0r6dhc.jpg)
+
+
+
+
+
+
+
+```java
+
+AlipayController 支付宝支付
+
+/pretreatment 准备参数
+关键步骤 createModel
+// 对一笔交易的具体描述信息，回调的时候用。yid_capital_giveFee
+// body中包含回调参数. yid 代表 用户id
+// capital 本金    giveFee 赠费    rechargeType      rechargeId
+model.setBody(yid + PayConst.UNDER_LINE + capital + PayConst.UNDER_LINE + giveFee + PayConst.UNDER_LINE + rechargeType +
+	PayConst.UNDER_LINE + rechargeId);
+
+// 处理支付成功逻辑
+// 处理回调
+localflag = alipayService.callback(params);
+
+rechargeType: 1 仅充值; 2 充值后消费
+打车之前, 必须要提前充值
+充值和消费做统一
+订单支付, 走充值后消费 
+预支付, 准备参数, 兼容充值和支付两种情况, 加了rechargeType参数
+
+
+------------------------
+  
+WeixinPayContorller 微信支付
+
+/pretreatment 准备参数
+String attach = yid + separator + capital + separator + giveFee + separator + rechargeType + separator + rechargeId;
+WeixinXmlPayRequest wxOrder = new WeixinXmlPayRequest(body, outTradeNo, totalFee, spBillCreateIp, notifyUrl, tradeType, openid, 	attach, appId, mchId, key);
+
+/callback 回调
+// 解析回调参数
+String[] attach = scanPayResData.getAttach().split("_");
+passengerWalletService.handleCallBack(rechargeType, rechargeId, tradeNo); // 走处理回调的方法
+
+----------------------------
+  
+通过 回调, 把业务和支付系统关联起来
+```
+
+
+
+抢单 -- 订单状态 -- 支付
+
+
+
+抢单 -- 更新订单: 司机的信息一开始没有, 是在抢单的时候改的
+
+
+
+![订单（抢单，订单状态，支付）](https://tva1.sinaimg.cn/large/008vxvgGly1h7bmc79sgcj30uh0u0jt1.jpg)
+
+
+
+```
+Q&A
+充值, 第三方支付涉及到和本系统的账户金额交互吗?
+组合支付: 账户余额 + 支付宝支付剩余金额 = 车费
+PassengerWalletServiceImpl # handleCallBack()
+
+行政流程: 网络预约出租汽车监管信息交互平台 总体技术要求
+	业务数据要给国家和省市上报
+	通用报文
+	公司支付信息
+	计价信息
+	车辆信息
+	司机信息
+	乘客信息
+	订单信息 从哪去哪
+	车辆出发经纬度
+	等待时间
+	上车时间
+	定位信息
+	 ----- 拿这个去设计数据库
+	
+要求<实时>
+业务数据 --> 消息队列(异步, 解耦, 削峰) --> 上报系统 --> 国家监管平台 参见 government-service 和 government-upload
+
+司机和乘客打电话, 不能使用真实号码, 使用 阿里隐私号码保护, 司机和乘客都给中间号打电话<录音会存到oss上>
+司机乘客照片什么都存在oss上
+app 和 h5 都能直接存在oss上, 把文件压力转移给了oss
+把压力往第三方上转
+
+对象存储 oss object storage service
+
+估算工作量, 以两个小时为单位??
+
+
+
+
+
+	
+```
+
+
+
+# 557 
+
+```java
+
+灰度发布 / 金丝雀发布
+
+服务A
+服务A1
+中间会共存一段时间
+
+AB测试, 一部分用户能用功能A, 一部分用户不能用功能A
+
+灰度规则, 存在redies/db 里, 指定用户A使用服务A, 用户B使用服务B
+
+提前知识
+网关zuul ribbon
+在网关写灰度规则
+服务与服务之间, 可能也需要用灰度
+
+eg: 微粒贷, 不是所有人都能用
+
+CAP 不保证C 一致性, 一定时间内还是可能访问故障节点
+  
+```
+
+
+
+业务总结:
+
+![13-业务总结](https://tva1.sinaimg.cn/large/008vxvgGly1h7cxs4c063j30ru1msq5q.jpg)
 
 
 
