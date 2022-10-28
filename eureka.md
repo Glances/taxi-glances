@@ -1711,7 +1711,7 @@ app 和 h5 都能直接存在oss上, 把文件压力转移给了oss
 
 
 
-# 557 
+# 557 灰度发布 - 网关灰度
 
 ```java
 
@@ -1741,6 +1741,103 @@ CAP 不保证C 一致性, 一定时间内还是可能访问故障节点
 业务总结:
 
 ![13-业务总结](https://tva1.sinaimg.cn/large/008vxvgGly1h7cxs4c063j30ru1msq5q.jpg)
+
+
+
+灰度发布
+
+版本控制, 系统只开发了v1, 但是用户调用v3v4v5, 没有的话默认调最新的. 但是有的话可能会报错<随着版本升级>
+系统升级, 保证原来的老服务也在, 新服务也要上. 快速的让服务接上. 100%不停服而更新 <只有谷歌能做到, 阿里做不到>
+
+![image-20221024165727490](https://tva1.sinaimg.cn/large/008vxvgGgy1h7ghdtlvfoj30t71j8acp.jpg)
+
+几种常用的发布方式:
+
+1. 蓝绿发布, 要求硬件是平时的2倍
+
+2. 滚动发布, 节省服务器资源, 新老服务切换有一段时间混在一起. 如果此时有错误日志, 不好排查
+
+3. 金丝雀发布 / 灰度发布. 允许失败, 允许适度浪费, 内部竞争
+
+   
+
+灰度发布可以支持做 A/B测试... 信用分>700, 可以看一些东西 支付鸨
+
+
+
+```java
+
+spring.profiles = v2
+eureka.instance.metadata-map.version = v2 // 优先从v2取服务
+  
+灰度发布代码
+  
+元数据里面可以有自己的东西
+eureka.instance.metadata-map.a = a1
+eureka api 网页: Update metadate 动态更新元数据
+将用户和metadata做匹配, 1号用户在这个系统中, 只能访问version为v1的实例
+
+if 自定义了好多sql, 数据库字段被人改了, 怎么办?
+  自定义的sql全都写在 ...custom.xml, 相当于一个继承的关系, 再定义一个 custom interface <接口的继承> @Mapper, 补充上自己的方法
+  防止数据库字段改变, 把自己的sql重写一遍
+   
+灰度规则: boss后台录入规则, user_id, server_name, meta_version
+  
+微服务调用:
+1. 服务之间的调用
+2. 网关对服务的调用
+  
+其实是将新老服务都注册, 然后通过yaml和数据库的规则去确定用户调用哪个服务
+load 规则的时候可以写到 guava cache filter 可以自定义写条件, 直接load出规则
+  
+```
+
+
+
+# 558 灰度发布 - ribbon
+
+
+
+![14-灰度发布](https://tva1.sinaimg.cn/large/008vxvgGgy1h7hoh5uarsj30u01gqdk0.jpg)
+
+```
+
+renew()
+续约的时候, 当前时间 + duration 延长了有效期
+剔除的时候: + 2倍 duration 是bug 但是影响小, 不管
+
+服务~服务的灰度发布:
+1. 过滤器
+2. http
+3. zuul过滤器, filter, 根据灰度规则 路由的时候选择一个合适的服务
+4. 用类似于权重分配
+
+ribbon IRule load balance 规则 写一套自己的分发规则
+客户端负载均衡 ribbon 默认: 区域轮询规则
+
+用户的信息怎么传给规则?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
 
 
 
