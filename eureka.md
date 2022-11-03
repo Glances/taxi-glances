@@ -1783,6 +1783,8 @@ if 自定义了好多sql, 数据库字段被人改了, 怎么办?
    
 灰度规则: boss后台录入规则, user_id, server_name, meta_version
   
+代码参考 online-taxi-three 4 中的 GrayFilter
+  
 微服务调用:
 1. 服务之间的调用
 2. 网关对服务的调用
@@ -1790,6 +1792,55 @@ if 自定义了好多sql, 数据库字段被人改了, 怎么办?
 其实是将新老服务都注册, 然后通过yaml和数据库的规则去确定用户调用哪个服务
 load 规则的时候可以写到 guava cache filter 可以自定义写条件, 直接load出规则
   
+```
+
+
+
+1. 从header 中取出userId
+2. 使用网关zuul filler, 根据userId指定服务
+
+```java
+@Component
+public class GrayFilter extends ZuulFilter {
+
+    @Override
+    public String filterType() {
+        return FilterConstants.PRE_TYPE;
+    }
+
+    @Override
+    public int filterOrder() {
+        return 0;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return false;
+    }
+
+    @Autowired
+    private CommonGrayRuleDaoCustom commonGrayRuleDaoCustom;
+
+    @Override
+    public Object run() throws ZuulException {
+
+        RequestContext currentContext = RequestContext.getCurrentContext();
+        HttpServletRequest request = currentContext.getRequest();
+
+        int userId = Integer.parseInt(request.getHeader("userId"));
+        // 根据用户id 查 规则  查库 v1,meata
+
+        // 金丝雀
+        if (userId == 1){
+            RibbonFilterContextHolder.getCurrentContext().add("version","v1");
+        // 普通用户
+        }else if (userId == 2){
+            RibbonFilterContextHolder.getCurrentContext().add("version","v2");
+        }
+
+        return null;
+    }
+}
 ```
 
 
@@ -1816,6 +1867,12 @@ ribbon IRule load balance 规则 写一套自己的分发规则
 客户端负载均衡 ribbon 默认: 区域轮询规则
 
 用户的信息怎么传给规则?
+在一个线程中, 使用 threadlocal 传参
+
+以 api-passenger 调用 service-sms(服务提供者) 为例:
+TestCallServiceSmsController.java
+
+代码查看 online-taxi-three 3
 
 
 
@@ -1825,19 +1882,414 @@ ribbon IRule load balance 规则 写一套自己的分发规则
 
 
 
-
-
-
-
-
-
-
-
+Map amap = new HashMap(); // 不占用空间
+amap.put("a", 1); // 开辟空间, 16. 16<1 17=32
 
 
 
 
 ```
+
+
+
+1. 获取当前线程的version
+2. 遍历所有server的version, 匹配转发到哪一个服务
+
+```java
+public class GrayRule extends AbstractLoadBalancerRule {
+
+    /**
+     * 根据用户选出一个服务
+     * @param iClientConfig
+     * @return
+     */
+    @Override
+    public void initWithNiwsConfig(IClientConfig iClientConfig) {
+    }
+  
+    @Override
+    public Server choose(Object key) {
+        return choose(getLoadBalancer(),key);
+    }
+
+    public Server choose(ILoadBalancer lb, Object key){
+
+        System.out.println("灰度  rule");
+        Server server = null;
+        while (server == null){
+            // 获取所有 可达的服务
+            List<Server> reachableServers = lb.getReachableServers();
+
+            // 获取 当前线程的参数 用户id verion=1
+            Map<String,String> map = RibbonParameters.get();
+            String version = "";
+            if (map != null && map.containsKey("version")){
+                version = map.get("version");
+            }
+            System.out.println("当前rule version:"+version);
+
+            // 根据用户选服务
+            for (int i = 0; i < reachableServers.size(); i++) {
+                server = reachableServers.get(i);
+                // 用户的version我知道了，服务的自定义meta我不知道。
+
+                // eureka:
+                //  instance:
+                //    metadata-map:
+                //      version: v2
+                // 不能调另外 方法实现 当前 类 应该实现的功能，尽量不要乱尝试
+                Map<String, String> metadata = ((DiscoveryEnabledServer) server).getInstanceInfo().getMetadata();
+                String version1 = metadata.get("version");
+                // 服务的meta也有了，用户的version也有了。
+                if (version.trim().equals(version1)){
+                    return server;
+                }
+            }
+        }
+        // 怎么让server 取到合适的值。
+        return server;
+    }
+}
+```
+
+
+
+拦截请求, set参数到 thread local中, (可以包含用户信息, 根据用户做灰度)
+
+```java
+@Aspect
+@Component
+public class RequestAspect {
+
+    @Pointcut("execution(* com.mashibing.apipassenger.controller..*Controller*.*(..))")
+    private void anyMehtod(){
+    }
+
+    @Before(value = "anyMehtod()")
+    public void before(JoinPoint joinPoint){
+
+        HttpServletRequest request = ((ServletRequestAttributes)RequestContextHolder.getRequestAttributes()).getRequest();
+        String version = request.getHeader("version");
+
+        Map<String,String> map = new HashMap<>();
+        map.put("version",version);
+
+        RibbonParameters.set(map);
+    }
+}
+```
+
+
+
+```
+根据 token 解析用户, 然后根据用户规则表找到对应的 metadata
+```
+
+
+
+灰度用户的规则存库, 不会在程序里写死.
+
+threadlocal 中还可以放 mybatis 连接池 事务
+
+
+
+
+
+------------------------------
+
+```java
+
+        <dependency>
+            <groupId>io.jmnarloch</groupId>
+            <artifactId>ribbon-discovery-filter-spring-cloud-starter</artifactId>
+            <version>2.1.0</version>
+        </dependency>
+
+ribbon-discovery-filter-spring-cloud-starter
+
+        // 灰度规则 匹配的地方 查db，redis ====
+        if (version.trim().equals("v2")){
+            // 注意, 这个地方就是metadata 中间的这个值
+            RibbonFilterContextHolder.getCurrentContext().add("version","v2");
+        }
+
+```
+
+
+
+# 559 传统服务向微服务改造的问题
+
+
+
+// 灰度面试相关
+
+![15-灰度面试-网关 敏感信息 处理](https://tva1.sinaimg.cn/large/008vxvgGly1h7oh6nqs7mj30u01du43m.jpg)
+
+
+
+```java
+网关 if 超大流量, 限流 sentinel
+
+
+1. token 不向后传 ------------------------------------------
+问题解决
+cloud-zuul: application.yml配置
+
+zuul:
+    #以下配置，表示忽略下面的值向微服务传播，以下配置为空表示：所有请求头都透传到后面微服务。
+#  sensitive-headers:
+// 源码, 从配置文件点进去, 这三个东西不往后传
+private Set<String> sensitiveHeaders = new LinkedHashSet(Arrays.asList("Cookie", "Set-Cookie", "Authorization"));
+
+完全微服务的话, 不让cookie往后传, 将鉴权提出来
+
+最小知道原则: 安全规则
+迪米特原则, 不和陌生人说话
+
+结合jwt
+服务之间不跨网关调用, 基本没有认证鉴权了
+
+```
+
+
+
+# 560 Zuul 过滤器 - 解决实际问题思路分析
+
+```java
+
+问题2, 老项目改造中的路由问题 (原来url不能变, 通过网关去适配)
+参考文章: 使用ZuulFilter转发路由 https://www.cnblogs.com/logan-w/p/12498943.html
+
+文章中提到的yml是这种写法
+zuul.
+	route.
+		<自定义一个serviceid>.
+			path = /account/**
+zuul.
+	route.
+		<自定义一个serviceid>.
+			serviceId = account
+但是不能保证请求的url, 在/account/后面的url路径 跟 account服务里面的路径 一致
+
+调用方不想改接口, 原来的接口是定死的, app: /url/xxx/xxx
+请求 /account/a, 但是没有 /a. 原因在于app之间的url没改
+问题: 原来的url不动, 而服务没有提供相应的接口
+
+```
+
+```java
+问题2解决方案:
+1. Filter, 使用灰度的方式改url, 做好老url 和 新url的对应关系
+2. 能不能用nginx, 把老项目反向代理到新项目. 把地址的映射放到nginx里面
+3. 这个事儿可能不能在微服务里做
+	-- 当你有拷贝的欲望的时候, 就该考虑设计的合理性了. 把拷贝的服务独立出去
+	zuul 自定义filter 来做
+  zuul ≈ 一系列过滤器. 最关键的一个类 ZuulServlet
+  四种过滤器 pre route post error, 他们的执行顺序? <面试题> --- 继承zuul filter 后实现的 filterType() 方法
+  路由的东西可以写在pre, 但是写在route比较好
+  route 有几种, 具体做什么事儿?    
+  断点打到 FilterProcessor.java # runFilters(), 当sType = "route" 时, 有三个过滤器
+  	-	RibbonRoutingFilter 路由到服务
+  	-	SimpleHostRoutingFilter 路由到url地址
+  	-	SendForwardFilter 转发(转向zuul自己)
+  ->
+  Object result = this.processZuulFilter(zuulFilter);
+	->
+  ZuulFilterResult result = filter.runFilter();
+
+		public ZuulFilterResult runFilter() {
+        ZuulFilterResult zr = new ZuulFilterResult();
+        if (!this.isFilterDisabled()) {
+          	// 注意 RibbonRoutingFilter SimpleHostRoutingFilter SendForwardFilter 实现
+            if (this.shouldFilter()) {
+                Tracer t = TracerFactory.instance().startMicroTracer("ZUUL::" + this.getClass().getSimpleName());
+
+                try {
+                    Object res = this.run();
+                    zr = new ZuulFilterResult(res, ExecutionStatus.SUCCESS);
+                } catch (Throwable var7) {
+                    t.setName("ZUUL::" + this.getClass().getSimpleName() + " failed");
+                    zr = new ZuulFilterResult(ExecutionStatus.FAILED);
+                    zr.setException(var7);
+                } finally {
+                    t.stopAndLog();
+                }
+            } else {
+                zr = new ZuulFilterResult(ExecutionStatus.SKIPPED);
+            }
+        }
+
+        return zr;
+    }
+
+  
+		
+    if (this.shouldFilter())
+    
+  	// 其 RibbonRoutingFilter 实现
+  	public boolean shouldFilter() {
+        RequestContext ctx = RequestContext.getCurrentContext();
+    		// sendZuulResponse 是否向后转发
+        return ctx.getRouteHost() == null && ctx.get("serviceId") != null && ctx.sendZuulResponse();
+    }
+
+		// 其 SimpleHostRoutingFilter 实现
+		public boolean shouldFilter() {
+        return RequestContext.getCurrentContext().getRouteHost() != null && RequestContext.getCurrentContext().sendZuulResponse();
+    }
+    
+    // 其 SendForwardFilter 实现
+    public boolean shouldFilter() {
+        RequestContext ctx = RequestContext.getCurrentContext();
+        return ctx.containsKey("forward.to") && !ctx.getBoolean("sendForwardFilter.ran", false);
+    }
+
+
+  	
+
+
+
+
+
+  rpc remote procedure call 远程方法调用. 不在一个进程里的调用. 包括http
+  
+  
+  
+  
+```
+
+
+
+![16-zuul-过滤器-解决实际问题-思路分析](16-zuul-过滤器-解决实际问题-思路分析.png)
+
+![image-20221031174606738](../../../Library/Application Support/typora-user-images/image-20221031174606738.png)
+
+```java
+
+ZuulServlet 源码
+类似责任链
+
+    public void service(ServletRequest servletRequest, ServletResponse servletResponse) throws ServletException, IOException {
+        try {
+            this.init((HttpServletRequest)servletRequest, (HttpServletResponse)servletResponse);
+            RequestContext context = RequestContext.getCurrentContext();
+            context.setZuulEngineRan();
+
+            try {
+                this.preRoute();
+            } catch (ZuulException var13) {
+                this.error(var13);
+                this.postRoute();
+                return;
+            }
+
+            try {
+                this.route();
+            } catch (ZuulException var12) {
+                this.error(var12);
+                this.postRoute();
+                return;
+            }
+
+            try {
+                this.postRoute();
+            } catch (ZuulException var11) {
+                this.error(var11);
+            }
+        } catch (Throwable var14) {
+            this.error(new ZuulException(var14, 500, "UNHANDLED_EXCEPTION_" + var14.getClass().getName()));
+        } finally {
+            RequestContext.getCurrentContext().unset();
+        }
+    }
+```
+
+
+
+# 561 网关 经典动态路由问题解决的2种方案
+
+
+
+![17-网关动态 路由](https://tva1.sinaimg.cn/large/008vxvgGgy1h7qk7q9ksqj30u011hjuh.jpg)
+
+
+
+```java
+@Component
+public class RibbonFilter extends ZuulFilter {
+
+    @Override
+    public String filterType() {
+        return FilterConstants.ROUTE_TYPE;
+    }
+
+    @Override
+    public int filterOrder() {
+        return 1;
+    }
+
+    @Override
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    @Override
+    public Object run() throws ZuulException {
+
+        RequestContext currentContext = RequestContext.getCurrentContext();
+        HttpServletRequest request = currentContext.getRequest();
+        String requestURI = request.getRequestURI();
+
+        if (requestURI.contains("/sms-test31")) {
+            currentContext.set(FilterConstants.SERVICE_ID_KEY, "service-sms");
+            currentContext.set(FilterConstants.REQUEST_URI_KEY, "/test/sms-test3");
+        }
+
+        return null;
+    }
+}
+
+// if 不使用 过滤器, 可以在yml 中直接配置吗
+要匹配到具体的地址, 可能得穷举
+  
+  风雨冷人: 1000个用户来自10个省
+
+
+    
+    1. wordId 数量不匹配
+    
+yet another
+annual ritual
+travel by...
+impose...on...
+have no option (but to do something)
+rail network
+get to
+or otherwise
+lower than
+well above
+successive governments
+on the grounds that
+rather than
+in years
+all very well     ---------------
+be able to do
+rest on
+be affected by...
+industrial action ---------------
+compensation for...
+pledge to do...
+so that
+continue to do...
+a package of
+be willing to do...
+see off
+for now
+with a vengeance ---------
+in short order
+```
+
+
 
 
 

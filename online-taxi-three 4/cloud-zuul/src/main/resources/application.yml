@@ -49,7 +49,7 @@ eureka:
     hostname: localhost
     instance-id: online-taxi-zuul
 zuul:
-    #一下配置，表示忽略下面的值向微服务传播，以下配置为空表示：所有请求头都透传到后面微服务。
+    #以下一下配置，表示忽略下面的值向微服务传播，以下配置为空表示：所有请求头都透传到后面微服务。
 #  sensitive-headers:
   routes:
     xxx:
