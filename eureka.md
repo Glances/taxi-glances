@@ -2243,6 +2243,8 @@ public class RibbonFilter extends ZuulFilter {
         if (requestURI.contains("/sms-test31")) {
             currentContext.set(FilterConstants.SERVICE_ID_KEY, "service-sms");
             currentContext.set(FilterConstants.REQUEST_URI_KEY, "/test/sms-test3");
+          	// 设置全路径方法
+          currentContext.setRouteHost(new URI("http://localhost:8003/test/sms-test3").toURL());
         }
 
         return null;
@@ -2252,9 +2254,101 @@ public class RibbonFilter extends ZuulFilter {
 // if 不使用 过滤器, 可以在yml 中直接配置吗
 要匹配到具体的地址, 可能得穷举
   
-  风雨冷人: 1000个用户来自10个省
+  风雨冷人: 根据不同的用户, 路由到不同的服务. 1000个用户来自10个省, 每个省100个用户, 进网关后 分到 北京系统 和 上海系统
+  数据分片. 系统要做扩张或者拆分
+  x 水平扩张 加机器
+  y 拆系统
+  z 数据分片
+    
+404 找不到地址
+网关中地址的来源: -- ZuulServerAutoConfiguration.
+  循环从eureka中得到的服务和配置文件中得到的服务
+	1. eureka服务 zuul从eureka获取的服务
+  2. 配置文件中定义
+产生404的几种情况:
+  1. 
+  2. 
+和之前定义的路由器有关:
+  -	RibbonRoutingFilter 路由到服务
+  -	SimpleHostRoutingFilter 路由到url具体的地址
+  -	SendForwardFilter 转发(转向zuul自己)
+
 
 ```
+
+
+
+# 562 网关动态路由 - 解决方案
+
+
+
+![18-网关-实战小技巧](https://tva1.sinaimg.cn/large/008vxvgGly1h7wde0fsd0j30tn17bgp9.jpg)
+
+
+
+```java
+
+传统项目改造成微服务:
+1. 敏感信息向后传
+2. 兼容老的url, zuul过滤器
+3. 根据用户做动态路由 yaml 配置文件
+  
+限流 和 分发
+高可用方案
+nginx + keepalived
+  
+  
+网关的顺序, <节省计算资源>:
+1. ip 黑名单 / 设备黑名单 (所以要考虑过滤器的顺序, 保证服务器资源)
+2. 用户的鉴权
+3. 
+  
+网关本质: 过滤器
+  should, run, filterType, order
+  
+网关, Fallback
+  
+
+
+
+
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
