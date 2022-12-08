@@ -2252,7 +2252,283 @@ public class RibbonFilter extends ZuulFilter {
 // if 不使用 过滤器, 可以在yml 中直接配置吗
 要匹配到具体的地址, 可能得穷举
   
-  风雨冷人: 1000个用户来自10个省
+  风雨冷人: 动态路由, 根据不同的用户路由到不同的服务
+	1000个用户来自10个省, 每个省100个用户
+  用灰度也能做, 但是这两个系统的service name 是一样的. 只不过这两个系统的tag不一样
+	可能 上海系统 和 北京系统 业务逻辑也有细微的差别
+  
+  系统扩张, 拓展
+  x 水平扩张 加机器
+  y 垂直扩张 拆服务, 大服务拆成小服务
+  z 数据分片 北京的去北京的, 上海的去上海的
+```
+
+
+
+
+
+# 562 网关动态路由 - 解决方案
+
+
+
+![18-网关-实战小技巧](18-%E7%BD%91%E5%85%B3-%E5%AE%9E%E6%88%98%E5%B0%8F%E6%8A%80%E5%B7%A7.png)
+
+```java
+网关注意事项:
+1. 过滤器顺序, ip黑名单, 设备黑名单
+	计算资源的节省
+2. 网关本质, 过滤器 should run, filter type, order
+
+fallback
+参考 taxi3 MsbFallback
+  
+shouldFilter 过滤器开关
+生产过程中小技巧, db中存储 过滤器开关
+可以在后台管理系统上配置过滤器开开关
+目的是不重启让过滤器生效
+  
+网关小技巧 ===================  网关的排错, 路由的排错
+路由的查看, 不知道网关配了多少filter, 怎么看?
+提前加上 spring-boot-starter-actuator 这个包, 写的时候就加上
+yaml加上
+  management:
+		endpoints:
+			web:
+				exposure:
+					// 暴露所有接口
+					include: "*"
+    endpoint"
+       health:
+				show-details: always // 默认是never
+         enabled: true
+       routes:
+				enabled: true
+访问localhost:9100/actuator/routes  route地址
+  过滤器地址 actuator/filters
+  
+  
+ip过滤, 次数限制, 设备号过滤. 用过滤器去做
+  pre过滤器
+  高匿ip, 你防我, 我也能防你防我 
+  
+  ip的限制
+  在 run() 方法中, 
+
+	// 不向后面的 route 过滤器转发
+	currentContext.setSendZuulResponse(false);
+	// 只控制不向 route 过滤器转发, pre过滤器都会执行
+	// 如果 pre过滤器中包含 ip  设备号 , 鉴权  都会执行
+  RequestConetxt ctx = RequestContext.getCurrentContext();
+	return ctx.sendZuulRespouse()
+
+  
+
+```
+
+
+
+# 563 网关实用小技巧
+
+
+
+![19-网关限流](19-%E7%BD%91%E5%85%B3%E9%99%90%E6%B5%81.png)
+
+```
+
+限流: 网关限流 / 每个服务的限流
+考虑:
+1. 公共出口
+2. 每个小服务的出口
+
+怎么做限流?
+令牌桶算法, 令牌生成器, 往桶里放令牌的速率是 固定速率 <需要限定时间窗口>
+用户调用的时候, 会先去令牌桶拿令牌
+1. 拿不到, 拒绝请求
+2. 拿到了, 正常处理业务
+
+// 2=每秒2个; 0.1=10秒1个
+rateLimiter.create(2)
+
+每个微服务限流, 应该怎么做?
+一般的限流, 都用filter
+implement Filter
+在doFilter()方法中写限流逻辑
+if(RATE_LIMITER.tryAcquire()) {
+	filterChain.doFilter(servletRequest, servletResponse);
+} else {
+	servletResponse.setCaracterEcoding("utf-8");
+	servletResponse.setContentType("text/html; charset=utf-8");
+
+	PrintWriter pw = null;
+	pw = servletRespouse.getWriter();
+	pw.write("限流了");
+	pw.close();
+}
+
+微服务承担得流量总和 50+50，加起来可以大于网关流量90
+网关会有一些逻辑，会对流量进行拦截，有得流量到大不了具体得服务
+
+网关做自定义得负载均衡，根据权重去分发流量
+单机2核4G
+```
+
+
+
+
+
+![19-分布式事务-2pc-3pc](19-%E5%88%86%E5%B8%83%E5%BC%8F%E4%BA%8B%E5%8A%A1-2pc-3pc.png)
+
+
+
+```java
+
+
+分布式事务
+  
+面试题: db本地事务如何保证?
+  锁 undolog redo
+  AD(日志文件) 
+  CI(锁) 一致性和 隔离性
+  ACID 保证事务的特性
+  
+  数据库写数据文件之前, 先写日志文件
+  如果事务提交了,数据库没有,执行redo操作,把事务重新往数据文件里放
+  如果事务没有提交,那就执行undo操作,把事务回滚
+  insert -- delete
+  update 1->2 -- update 2->1
+  
+  三方支付->支付系统->订单系统
+  合在一起的事务该如何保证?
+  
+  刚性事务 acid <实时一致性>
+  柔性事务 base理论 <最终一致性>
+  xa协议, xa接口
+  事务管理器 transaction manager TM, 资源管理器 resource manager RM
+  两个系统在一起的事务应该怎么保证?
+  
+  
+  2阶段提交的问题:
+	TM 单点故障 / 阻塞资源 / 数据不一致
+  只有TM有超时机制, RM没有超时机制
+    
+  3pc 优化:
+	增加了一个询问的过程, 能不能提交? 询问之后进行2pc提交 <增大了成功的概率, 并不能>
+  还加了超时机制, 等待超时之后or回复No, 会中断事务
+  
+ ------
+    服务1提交后, 服务2挂了
+    如果出现问题, 补偿
+    人工补偿 / 定时补偿 / 脚本补偿
+    
+    
+    
+    mybatis 使用thread local 做事务, 
+		锁定资源 保证提交的时候事务是一样的	
+      
+    二阶段一进来就锁定资源, 如果出错可能导致资源释放不了
+    三阶段就是为了减少资源锁定的时间
+    3pc 和 2pc相比, 降低了锁定资源的概率
+    如果第一步锁了, 其他资源调用会出错
+      
+    3pc 优化:
+		a. can commit 资源不锁定
+    b. tm 协调者 和rm 资源拥有者 的超时处理机制 <设置超时机制, 为了减少资源的锁定>
+      tm 未收到反馈, 给rm发中断事务的命令
+      rm 在2和3阶段, 没有收到tm的命令, 默认提交 <超时默认提交> <有概率错误>
+      
+ 
+ ------------
+      
+     
+      柔性事务
+      
+      
+      
+      
+      
+     
+```
+
+# 564 网关限流 服务限流 分布式事务
+
+
+
+```java
+
+
+
+// 1. 生产令牌
+// 写在 CloudZuulApplication 中
+psvm {
+	init();
+  SpringApplication.run(CloudZuulApplication.class, args);
+}
+
+private static void init() {
+	// 所有限流规则的合集
+	List<FlowRule> rules = Lists.newArrayList();
+	
+	FlowRule rule = new FlowRule();
+	// 资源名称, 资源: 限流要保护的东西
+	rule.setResourse("HelloWorld");
+	// 按照qps来限流
+	rule.setGrade(RuleConstant.FLOW_GRADE_QPS);
+	// 2qps
+	rule.setCount(2);
+	
+	rules.add(rule);
+	FlowRuleManager.loadRules(rules);
+}
+
+
+// 2. 使用令牌
+// 规则创建完成使用 sentinelFilter   sentinelFilter n/v. 哨兵
+public Object run() throws ZuulException {
+  	// 限流的业务逻辑(使用令牌)
+  	Entry entry = null;
+  	try {
+      // 去保护资源的令牌桶里去取,if取得到, 走业务; 取不到, 走阻塞
+    	entry = SphU.entry("HelloWorld")
+      // 业务逻辑..
+			
+      // 不走后面的过滤器
+      // 控制走不走后面的过滤器
+      // 后面的过滤器shouldFilter() 方法中使用 sendZuulResponse 的值来判断
+      RequestContext.getCurrentContext().setSendZuulResponse(false);
+        
+        
+    } catch (BlockException) {
+      sout("阻塞住了")
+    } finally {
+      if (entry != null) {
+      	entry.exit();
+      }  
+    }
+  	return null;
+}
+
+
+
+====================================
+  
+  方式2, 32min
+  使用 Sentinel 做限流, 切面, 注解的方式
+  
+	
+  @Service
+  public class SentinelServie {
+    
+    @SentinelResource(value = "SentinelServie.success", blockHandler = "fail")
+  	public String success() {
+    	sout("success 正常请求");
+      return "success"
+    }
+    
+    public String fail() {
+    	sout("阻塞");
+      return "fail"
+    }
+  }
 
 ```
 
@@ -2260,3 +2536,34 @@ public class RibbonFilter extends ZuulFilter {
 
 
 
+
+
+
+
+# 565 提交协议
+
+![20-分布式事务-2pc-3pc-2](20-%E5%88%86%E5%B8%83%E5%BC%8F%E4%BA%8B%E5%8A%A1-2pc-3pc-2.png)
+
+
+
+
+
+![image-20221206223502547](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223502547.png)
+
+
+
+![image-20221206223513409](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223513409.png)
+
+![image-20221206223544642](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223544642.png)
+
+![image-20221206223558534](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223558534.png)
+
+![image-20221206223609487](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223609487.png)
+
+
+
+
+
+==============华丽的分隔符====================================
+
+![21-消息队列-定时任务 本地事件表](21-%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97-%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1%20%E6%9C%AC%E5%9C%B0%E4%BA%8B%E4%BB%B6%E8%A1%A8.png)
