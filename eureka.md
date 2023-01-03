@@ -2546,6 +2546,12 @@ public Object run() throws ZuulException {
 
 
 
+适用于多个项目 连接多个数据库
+
+业务是第三方支付回调, 将系统里的支付记录改成已支付
+
+
+
 
 
 ![image-20221206223502547](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223502547.png)
@@ -2566,4 +2572,306 @@ public Object run() throws ZuulException {
 
 ==============华丽的分隔符====================================
 
+
+
+<消息队列+事件表怎么实现分布式事务>
+
+
+
+21,22,23 通过本地事务保证可靠, 是一个原子操作
+
+
+
+先本地db, 再调用其他系统
+
+否则异常了无法回滚其他系统的调用
+
+<可控性排序>
+
+
+
+左边和右边两个系统是独立的本地事务, 各自控制自己的
+
 ![21-消息队列-定时任务 本地事件表](21-%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97-%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1%20%E6%9C%AC%E5%9C%B0%E4%BA%8B%E4%BB%B6%E8%A1%A8.png)
+
+recover 恢复消息队列中的消息, 下次来还可以接着消费
+
+31, 32, 33 保证了幂等操作
+
+通过 消息事件的id, 主键约束来保证重复消费的问题  <数据库的主键>
+
+通过 主键唯一 把重复的消息过滤干净了
+
+
+
+事件id是业务相关, 唯一的 
+
+
+
+如果数据量大的话可以把事件表做成历史表, 已完成的数据归档到另一张表里面去
+
+<冷热数据>
+
+
+
+这个系统的复杂是为了拓展 统计, 计分, 通知, 物流系统的简单
+
+
+
+
+
+
+
+# 566 消息队列 - 定时任务 - 本地事件表
+
+active mq 下载完解压, 第一步先要在xml 配置文件中配置死信队列
+使用active 演示, 因为没有事务
+
+非持久化的消息也放在死信队列里面
+
+![image-20221214203400800](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214203400800.png)
+
+
+
+死信队列: 消费正常队列中的消息, 默认是消费六次不给确认的话, 消息就会被扔到死信队列当中
+死信队列也是一个队列, 可以正常监听死信, 做补偿处理, 告警等
+
+active mq 配置: 
+
+![image-20221214204911645](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214204911645.png)
+
+localhost: 8161 /admin/ queue.jsp 管理界面 active mq
+
+
+
+
+
+定时任务: 读数据, 往消息队列扔
+
+还需要加上回滚 @transactional(rollbackFor = Exception.class) 本地事务
+
+![image-20221214205255232](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214205255232.png)  
+
+![image-20221214205832876](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214205832876.png)
+
+加上注解 @EnableJms @EnableScheduling
+
+if 消息队列挂了, 本地事务可以保证不出错
+
+定时任务的好处: 挂了再起来就行, 不用做别的操作
+
+对数据实时性要求不是很高的情况下, 用消息队列 + 事件表比较好  <百分之六七十没问题>
+
+对实时性要求比较高的 如 股票交易的 即时通信的  不行
+
+
+
+消费者 connection , 需要发送ack 手动确认消息 redelivery policy 重发策略
+
+如果消费一条消息失败了
+
+![image-20221215151956440](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215151956440.png)
+
+![image-20221215154907367](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215154907367.png)
+
+
+
+
+
+消费者队列:
+
+session.recover()    消费出现异常, 把消息送回去下次消费 <回滚>
+
+消费端不用事务, 消费端是通过消息的重复消费来保证的, 要么就插进去要么插不进去, 回滚消息
+
+![image-20221215155841245](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215155841245.png)
+
+消费者插入数据库的时候需要指定主键id
+
+利用主键id来做幂等性的
+
+通过消息事件的id , 主键约束, 来保证消息重复消费的问题
+
+
+
+不停的消费, 消息冲突了就会进入死信队列
+
+死信队列也是队列, 也需要监听, 如果消息进入死信队列需要去补偿处理
+
+消费六次没有成功, 进入死信队列
+
+
+
+消息队列收到ACK, 从正常队列中移出
+
+如果没有收到, 消费六次放入死信队列
+
+![image-20221215161004474](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215161004474.png)
+
+死信队列一消费就消费掉了
+
+
+
+<浪费资源的问题>
+服务部署多套, 定时任务部署几套呢?
+需要使用 分布式定时任务; 如果不用的话得加分布式锁
+
+网约车定时任务只用一台机器
+一天5000个订单, 很轻松
+
+
+
+# 567 LCN 原理 - 实战
+
+lcn 分布式事务框架 - 类似两阶段的一个实现    <lcn 柔性事务>
+lock 锁定事务单元
+confirm 确认事务
+notify 通知事务 
+
+ xa 协议 Oracle ,  两阶段 定义了一些标准, 应用程序 / 事务管理器 / 资源管理器 / 通讯管理器
+xa connection 各大厂商都实现了  mysql   
+
+
+
+![22-lcn-原理-实战](22-lcn-%E5%8E%9F%E7%90%86-%E5%AE%9E%E6%88%98.png)
+
+
+
+
+
+代码参考 lcn-parent
+github lcn 官网
+
+lcn 官方文档: https://www.codingapi.com/docs/txlcn-principle-control/
+
+
+
+
+
+# 568 TCC 原理 - 实战
+
+
+
+lbs 基于位置的软件 靠坐标
+
+
+
+![23-tcc](23-tcc.png)
+
+
+
+
+
+tcc  try confirm cancel
+需要写confirm()方法 和 cancel()方法
+
+
+
+如果tcc插入一条数据要回滚， insert 数据的id怎么获取?
+通过 threadLocal 获取不到
+使用一个static的map，key 为 机器名+（进程名）+方法名+时间戳
+一般业务比较简单用tcc
+
+用自带事务的中间件，比如mysql，不用tcc，用lcn
+没必要，还增加了业务的复杂度。 需要配合处理异常情况 写cancel()
+
+# 569 TCC-mysql-redis-混合实战
+
+注意使用场景
+一般都不用tcc， 使用lcn即可
+
+
+
+tc: transaction client
+rm: resource manager
+
+
+
+order 调用pay的时候, 怎么知道是一个事务组的呢?
+在 http 请求头中 增加参数 groupId, 把事务组id带过去
+
+
+
+lcn 关键点: 代理数据源, 代理 connection
+查看源码 DataSourceAspect.java
+
+```java
+    @Around("execution(* javax.sql.DataSource.getConnection(..))")
+    public Object around(ProceedingJoinPoint point) throws Throwable {
+        return dtxResourceWeaver.getConnection(() -> (Connection) point.proceed());
+    }
+
+		->
+    
+    public Object getConnection(ConnectionCallback connectionCallback) throws Throwable {
+        DTXLocalContext dtxLocalContext = DTXLocalContext.cur();
+        if (Objects.nonNull(dtxLocalContext) && dtxLocalContext.isProxy()) {
+            String transactionType = dtxLocalContext.getTransactionType();
+            TransactionResourceProxy resourceProxy = txLcnBeanHelper.loadTransactionResourceProxy(transactionType);
+            Connection connection = resourceProxy.proxyConnection(connectionCallback);
+            log.debug("proxy a sql connection: {}.", connection);
+            return connection;
+        }
+        return connectionCallback.call();
+    }
+```
+
+代理的 connection 查看  LcnConnectionProxy.java
+
+```java
+		假提交, 假回滚, 假关闭, 全都交给代理的 connection 接管    
+
+		@Override
+    public void commit() throws SQLException {
+        //connection.commit();
+    }
+
+    @Override
+    public void rollback() throws SQLException {
+        //connection.rollback();
+    }
+
+    @Override
+    public void close() throws SQLException {
+        //connection.close();
+    }
+```
+
+
+
+为什么 @LcnTransaction 和 @TccTransaction 注解 能够生效?
+找 TransactionAspect.java 去debug源码
+去跟踪 解析 @TccTransaction 注解的类, 全局搜索 TccTransaction 注解, 搜到 TransactionAspect.java 类
+
+```java
+    @Around("lcnTransactionPointcut() && !txcTransactionPointcut()" +
+            "&& !tccTransactionPointcut() && !txTransactionPointcut()")
+    public Object runWithLcnTransaction(ProceedingJoinPoint point) throws Throwable {
+        DTXInfo dtxInfo = DTXInfo.getFromCache(point);
+        LcnTransaction lcnTransaction = dtxInfo.getBusinessMethod().getAnnotation(LcnTransaction.class);
+        dtxInfo.setTransactionType(Transactions.LCN);
+        dtxInfo.setTransactionPropagation(lcnTransaction.propagation());
+        return dtxLogicWeaver.runTransaction(dtxInfo, point::proceed);
+    }
+
+		
+```
+
+![24-tcc-mysql-redis-源码](24-tcc-mysql-redis-%E6%BA%90%E7%A0%81.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
