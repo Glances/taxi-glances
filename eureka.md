@@ -2254,6 +2254,7 @@ public class RibbonFilter extends ZuulFilter {
 // if 不使用 过滤器, 可以在yml 中直接配置吗
 要匹配到具体的地址, 可能得穷举
   
+<<<<<<< HEAD
   风雨冷人: 根据不同的用户, 路由到不同的服务. 1000个用户来自10个省, 每个省100个用户, 进网关后 分到 北京系统 和 上海系统
   数据分片. 系统要做扩张或者拆分
   x 水平扩张 加机器
@@ -2274,10 +2275,22 @@ public class RibbonFilter extends ZuulFilter {
   -	SendForwardFilter 转发(转向zuul自己)
 
 
+=======
+  风雨冷人: 动态路由, 根据不同的用户路由到不同的服务
+	1000个用户来自10个省, 每个省100个用户
+  用灰度也能做, 但是这两个系统的service name 是一样的. 只不过这两个系统的tag不一样
+	可能 上海系统 和 北京系统 业务逻辑也有细微的差别
+  
+  系统扩张, 拓展
+  x 水平扩张 加机器
+  y 垂直扩张 拆服务, 大服务拆成小服务
+  z 数据分片 北京的去北京的, 上海的去上海的
+>>>>>>> 7b7f6a30dfdaaf4f6909432185a2ad7eb77b4baf
 ```
 
 
 
+<<<<<<< HEAD
 # 562 网关动态路由 - 解决方案
 
 
@@ -2328,13 +2341,627 @@ nginx + keepalived
 
 
 
+=======
+
+
+# 562 网关动态路由 - 解决方案
 
 
 
+![18-网关-实战小技巧](18-%E7%BD%91%E5%85%B3-%E5%AE%9E%E6%88%98%E5%B0%8F%E6%8A%80%E5%B7%A7.png)
+
+```java
+网关注意事项:
+1. 过滤器顺序, ip黑名单, 设备黑名单
+	计算资源的节省
+2. 网关本质, 过滤器 should run, filter type, order
+
+fallback
+参考 taxi3 MsbFallback
+  
+shouldFilter 过滤器开关
+生产过程中小技巧, db中存储 过滤器开关
+可以在后台管理系统上配置过滤器开开关
+目的是不重启让过滤器生效
+  
+网关小技巧 ===================  网关的排错, 路由的排错
+路由的查看, 不知道网关配了多少filter, 怎么看?
+提前加上 spring-boot-starter-actuator 这个包, 写的时候就加上
+yaml加上
+  management:
+		endpoints:
+			web:
+				exposure:
+					// 暴露所有接口
+					include: "*"
+    endpoint"
+       health:
+				show-details: always // 默认是never
+         enabled: true
+       routes:
+				enabled: true
+访问localhost:9100/actuator/routes  route地址
+  过滤器地址 actuator/filters
+  
+  
+ip过滤, 次数限制, 设备号过滤. 用过滤器去做
+  pre过滤器
+  高匿ip, 你防我, 我也能防你防我 
+  
+  ip的限制
+  在 run() 方法中, 
+
+	// 不向后面的 route 过滤器转发
+	currentContext.setSendZuulResponse(false);
+	// 只控制不向 route 过滤器转发, pre过滤器都会执行
+	// 如果 pre过滤器中包含 ip  设备号 , 鉴权  都会执行
+  RequestConetxt ctx = RequestContext.getCurrentContext();
+	return ctx.sendZuulRespouse()
+
+  
 
 ```
 
 
+
+# 563 网关实用小技巧
+
+
+
+![19-网关限流](19-%E7%BD%91%E5%85%B3%E9%99%90%E6%B5%81.png)
+
+```
+
+限流: 网关限流 / 每个服务的限流
+考虑:
+1. 公共出口
+2. 每个小服务的出口
+
+怎么做限流?
+令牌桶算法, 令牌生成器, 往桶里放令牌的速率是 固定速率 <需要限定时间窗口>
+用户调用的时候, 会先去令牌桶拿令牌
+1. 拿不到, 拒绝请求
+2. 拿到了, 正常处理业务
+
+// 2=每秒2个; 0.1=10秒1个
+rateLimiter.create(2)
+
+每个微服务限流, 应该怎么做?
+一般的限流, 都用filter
+implement Filter
+在doFilter()方法中写限流逻辑
+if(RATE_LIMITER.tryAcquire()) {
+	filterChain.doFilter(servletRequest, servletResponse);
+} else {
+	servletResponse.setCaracterEcoding("utf-8");
+	servletResponse.setContentType("text/html; charset=utf-8");
+
+	PrintWriter pw = null;
+	pw = servletRespouse.getWriter();
+	pw.write("限流了");
+	pw.close();
+}
+
+微服务承担得流量总和 50+50，加起来可以大于网关流量90
+网关会有一些逻辑，会对流量进行拦截，有得流量到大不了具体得服务
+
+网关做自定义得负载均衡，根据权重去分发流量
+单机2核4G
+```
+>>>>>>> 7b7f6a30dfdaaf4f6909432185a2ad7eb77b4baf
+
+
+
+
+
+![19-分布式事务-2pc-3pc](19-%E5%88%86%E5%B8%83%E5%BC%8F%E4%BA%8B%E5%8A%A1-2pc-3pc.png)
+
+
+
+```java
+
+
+分布式事务
+  
+面试题: db本地事务如何保证?
+  锁 undolog redo
+  AD(日志文件) 
+  CI(锁) 一致性和 隔离性
+  ACID 保证事务的特性
+  
+  数据库写数据文件之前, 先写日志文件
+  如果事务提交了,数据库没有,执行redo操作,把事务重新往数据文件里放
+  如果事务没有提交,那就执行undo操作,把事务回滚
+  insert -- delete
+  update 1->2 -- update 2->1
+  
+  三方支付->支付系统->订单系统
+  合在一起的事务该如何保证?
+  
+  刚性事务 acid <实时一致性>
+  柔性事务 base理论 <最终一致性>
+  xa协议, xa接口
+  事务管理器 transaction manager TM, 资源管理器 resource manager RM
+  两个系统在一起的事务应该怎么保证?
+  
+  
+  2阶段提交的问题:
+	TM 单点故障 / 阻塞资源 / 数据不一致
+  只有TM有超时机制, RM没有超时机制
+    
+  3pc 优化:
+	增加了一个询问的过程, 能不能提交? 询问之后进行2pc提交 <增大了成功的概率, 并不能>
+  还加了超时机制, 等待超时之后or回复No, 会中断事务
+  
+ ------
+    服务1提交后, 服务2挂了
+    如果出现问题, 补偿
+    人工补偿 / 定时补偿 / 脚本补偿
+    
+    
+    
+    mybatis 使用thread local 做事务, 
+		锁定资源 保证提交的时候事务是一样的	
+      
+    二阶段一进来就锁定资源, 如果出错可能导致资源释放不了
+    三阶段就是为了减少资源锁定的时间
+    3pc 和 2pc相比, 降低了锁定资源的概率
+    如果第一步锁了, 其他资源调用会出错
+      
+    3pc 优化:
+		a. can commit 资源不锁定
+    b. tm 协调者 和rm 资源拥有者 的超时处理机制 <设置超时机制, 为了减少资源的锁定>
+      tm 未收到反馈, 给rm发中断事务的命令
+      rm 在2和3阶段, 没有收到tm的命令, 默认提交 <超时默认提交> <有概率错误>
+      
+ 
+ ------------
+      
+     
+      柔性事务
+      
+      
+      
+      
+      
+     
+```
+
+# 564 网关限流 服务限流 分布式事务
+
+
+
+```java
+
+
+
+// 1. 生产令牌
+// 写在 CloudZuulApplication 中
+psvm {
+	init();
+  SpringApplication.run(CloudZuulApplication.class, args);
+}
+
+private static void init() {
+	// 所有限流规则的合集
+	List<FlowRule> rules = Lists.newArrayList();
+	
+	FlowRule rule = new FlowRule();
+	// 资源名称, 资源: 限流要保护的东西
+	rule.setResourse("HelloWorld");
+	// 按照qps来限流
+	rule.setGrade(RuleConstant.FLOW_GRADE_QPS);
+	// 2qps
+	rule.setCount(2);
+	
+	rules.add(rule);
+	FlowRuleManager.loadRules(rules);
+}
+
+
+// 2. 使用令牌
+// 规则创建完成使用 sentinelFilter   sentinelFilter n/v. 哨兵
+public Object run() throws ZuulException {
+  	// 限流的业务逻辑(使用令牌)
+  	Entry entry = null;
+  	try {
+      // 去保护资源的令牌桶里去取,if取得到, 走业务; 取不到, 走阻塞
+    	entry = SphU.entry("HelloWorld")
+      // 业务逻辑..
+			
+      // 不走后面的过滤器
+      // 控制走不走后面的过滤器
+      // 后面的过滤器shouldFilter() 方法中使用 sendZuulResponse 的值来判断
+      RequestContext.getCurrentContext().setSendZuulResponse(false);
+        
+        
+    } catch (BlockException) {
+      sout("阻塞住了")
+    } finally {
+      if (entry != null) {
+      	entry.exit();
+      }  
+    }
+  	return null;
+}
+
+
+
+====================================
+  
+  方式2, 32min
+  使用 Sentinel 做限流, 切面, 注解的方式
+  
+	
+  @Service
+  public class SentinelServie {
+    
+    @SentinelResource(value = "SentinelServie.success", blockHandler = "fail")
+  	public String success() {
+    	sout("success 正常请求");
+      return "success"
+    }
+    
+    public String fail() {
+    	sout("阻塞");
+      return "fail"
+    }
+  }
+
+```
+
+
+
+
+
+
+
+
+
+# 565 提交协议
+
+![20-分布式事务-2pc-3pc-2](20-%E5%88%86%E5%B8%83%E5%BC%8F%E4%BA%8B%E5%8A%A1-2pc-3pc-2.png)
+
+
+
+适用于多个项目 连接多个数据库
+
+业务是第三方支付回调, 将系统里的支付记录改成已支付
+
+
+
+
+
+![image-20221206223502547](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223502547.png)
+
+
+
+![image-20221206223513409](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223513409.png)
+
+![image-20221206223544642](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223544642.png)
+
+![image-20221206223558534](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223558534.png)
+
+![image-20221206223609487](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221206223609487.png)
+
+
+
+
+
+==============华丽的分隔符====================================
+
+
+
+<消息队列+事件表怎么实现分布式事务>
+
+
+
+21,22,23 通过本地事务保证可靠, 是一个原子操作
+
+
+
+先本地db, 再调用其他系统
+
+否则异常了无法回滚其他系统的调用
+
+<可控性排序>
+
+
+
+左边和右边两个系统是独立的本地事务, 各自控制自己的
+
+![21-消息队列-定时任务 本地事件表](21-%E6%B6%88%E6%81%AF%E9%98%9F%E5%88%97-%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1%20%E6%9C%AC%E5%9C%B0%E4%BA%8B%E4%BB%B6%E8%A1%A8.png)
+
+recover 恢复消息队列中的消息, 下次来还可以接着消费
+
+31, 32, 33 保证了幂等操作
+
+通过 消息事件的id, 主键约束来保证重复消费的问题  <数据库的主键>
+
+通过 主键唯一 把重复的消息过滤干净了
+
+
+
+事件id是业务相关, 唯一的 
+
+
+
+如果数据量大的话可以把事件表做成历史表, 已完成的数据归档到另一张表里面去
+
+<冷热数据>
+
+
+
+这个系统的复杂是为了拓展 统计, 计分, 通知, 物流系统的简单
+
+
+
+
+
+
+
+# 566 消息队列 - 定时任务 - 本地事件表
+
+active mq 下载完解压, 第一步先要在xml 配置文件中配置死信队列
+使用active 演示, 因为没有事务
+
+非持久化的消息也放在死信队列里面
+
+![image-20221214203400800](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214203400800.png)
+
+
+
+死信队列: 消费正常队列中的消息, 默认是消费六次不给确认的话, 消息就会被扔到死信队列当中
+死信队列也是一个队列, 可以正常监听死信, 做补偿处理, 告警等
+
+active mq 配置: 
+
+![image-20221214204911645](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214204911645.png)
+
+localhost: 8161 /admin/ queue.jsp 管理界面 active mq
+
+
+
+
+
+定时任务: 读数据, 往消息队列扔
+
+还需要加上回滚 @transactional(rollbackFor = Exception.class) 本地事务
+
+![image-20221214205255232](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214205255232.png)  
+
+![image-20221214205832876](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221214205832876.png)
+
+加上注解 @EnableJms @EnableScheduling
+
+if 消息队列挂了, 本地事务可以保证不出错
+
+定时任务的好处: 挂了再起来就行, 不用做别的操作
+
+对数据实时性要求不是很高的情况下, 用消息队列 + 事件表比较好  <百分之六七十没问题>
+
+对实时性要求比较高的 如 股票交易的 即时通信的  不行
+
+
+
+消费者 connection , 需要发送ack 手动确认消息 redelivery policy 重发策略
+
+如果消费一条消息失败了
+
+![image-20221215151956440](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215151956440.png)
+
+![image-20221215154907367](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215154907367.png)
+
+
+
+
+
+消费者队列:
+
+session.recover()    消费出现异常, 把消息送回去下次消费 <回滚>
+
+消费端不用事务, 消费端是通过消息的重复消费来保证的, 要么就插进去要么插不进去, 回滚消息
+
+![image-20221215155841245](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215155841245.png)
+
+消费者插入数据库的时候需要指定主键id
+
+利用主键id来做幂等性的
+
+通过消息事件的id , 主键约束, 来保证消息重复消费的问题
+
+
+
+不停的消费, 消息冲突了就会进入死信队列
+
+死信队列也是队列, 也需要监听, 如果消息进入死信队列需要去补偿处理
+
+消费六次没有成功, 进入死信队列
+
+
+
+消息队列收到ACK, 从正常队列中移出
+
+如果没有收到, 消费六次放入死信队列
+
+![image-20221215161004474](C:/Users/Glances/AppData/Roaming/Typora/typora-user-images/image-20221215161004474.png)
+
+死信队列一消费就消费掉了
+
+
+
+<浪费资源的问题>
+服务部署多套, 定时任务部署几套呢?
+需要使用 分布式定时任务; 如果不用的话得加分布式锁
+
+网约车定时任务只用一台机器
+一天5000个订单, 很轻松
+
+
+
+# 567 LCN 原理 - 实战
+
+lcn 分布式事务框架 - 类似两阶段的一个实现    <lcn 柔性事务>
+lock 锁定事务单元
+confirm 确认事务
+notify 通知事务 
+
+ xa 协议 Oracle ,  两阶段 定义了一些标准, 应用程序 / 事务管理器 / 资源管理器 / 通讯管理器
+xa connection 各大厂商都实现了  mysql   
+
+
+
+![22-lcn-原理-实战](22-lcn-%E5%8E%9F%E7%90%86-%E5%AE%9E%E6%88%98.png)
+
+
+
+
+
+代码参考 lcn-parent
+github lcn 官网
+
+lcn 官方文档: https://www.codingapi.com/docs/txlcn-principle-control/
+
+
+
+
+
+# 568 TCC 原理 - 实战
+
+
+
+lbs 基于位置的软件 靠坐标
+
+
+
+![23-tcc](23-tcc.png)
+
+
+
+
+
+tcc  try confirm cancel
+需要写confirm()方法 和 cancel()方法
+
+
+
+如果tcc插入一条数据要回滚， insert 数据的id怎么获取?
+通过 threadLocal 获取不到
+使用一个static的map，key 为 机器名+（进程名）+方法名+时间戳
+一般业务比较简单用tcc
+
+用自带事务的中间件，比如mysql，不用tcc，用lcn
+没必要，还增加了业务的复杂度。 需要配合处理异常情况 写cancel()
+
+# 569 TCC-mysql-redis-混合实战
+
+注意使用场景
+一般都不用tcc， 使用lcn即可
+
+
+
+tc: transaction client
+rm: resource manager
+
+
+
+order 调用pay的时候, 怎么知道是一个事务组的呢?
+在 http 请求头中 增加参数 groupId, 把事务组id带过去
+
+
+
+lcn 关键点: 代理数据源, 代理 connection
+查看源码 DataSourceAspect.java
+
+```java
+    @Around("execution(* javax.sql.DataSource.getConnection(..))")
+    public Object around(ProceedingJoinPoint point) throws Throwable {
+        return dtxResourceWeaver.getConnection(() -> (Connection) point.proceed());
+    }
+
+		->
+    
+    public Object getConnection(ConnectionCallback connectionCallback) throws Throwable {
+        DTXLocalContext dtxLocalContext = DTXLocalContext.cur();
+        if (Objects.nonNull(dtxLocalContext) && dtxLocalContext.isProxy()) {
+            String transactionType = dtxLocalContext.getTransactionType();
+            TransactionResourceProxy resourceProxy = txLcnBeanHelper.loadTransactionResourceProxy(transactionType);
+            Connection connection = resourceProxy.proxyConnection(connectionCallback);
+            log.debug("proxy a sql connection: {}.", connection);
+            return connection;
+        }
+        return connectionCallback.call();
+    }
+```
+
+代理的 connection 查看  LcnConnectionProxy.java
+
+```java
+		假提交, 假回滚, 假关闭, 全都交给代理的 connection 接管    
+
+		@Override
+    public void commit() throws SQLException {
+        //connection.commit();
+    }
+
+    @Override
+    public void rollback() throws SQLException {
+        //connection.rollback();
+    }
+
+    @Override
+    public void close() throws SQLException {
+        //connection.close();
+    }
+```
+
+
+
+为什么 @LcnTransaction 和 @TccTransaction 注解 能够生效?
+找 TransactionAspect.java 去debug源码
+去跟踪 解析 @TccTransaction 注解的类, 全局搜索 TccTransaction 注解, 搜到 TransactionAspect.java 类
+
+```java
+    @Around("lcnTransactionPointcut() && !txcTransactionPointcut()" +
+            "&& !tccTransactionPointcut() && !txTransactionPointcut()")
+    public Object runWithLcnTransaction(ProceedingJoinPoint point) throws Throwable {
+        DTXInfo dtxInfo = DTXInfo.getFromCache(point);
+        LcnTransaction lcnTransaction = dtxInfo.getBusinessMethod().getAnnotation(LcnTransaction.class);
+        dtxInfo.setTransactionType(Transactions.LCN);
+        dtxInfo.setTransactionPropagation(lcnTransaction.propagation());
+        return dtxLogicWeaver.runTransaction(dtxInfo, point::proceed);
+    }
+
+		
+```
+
+![24-tcc-mysql-redis-源码](24-tcc-mysql-redis-%E6%BA%90%E7%A0%81.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Seata AT 模式
+
+1阶段:
+	1 执行业务数据 + 2 回滚日志记录. 提交本地事务(1和2), 释放资源
+	注意: 相比之前两阶段释放了资源, 使用日志记录来保证同一个连接
+注意图片中的 beforeImgae 和 afterImage, 提交之前的数据都已经记录下来了
+
+if 回滚失败怎么办?
+数据库回滚 acid 重试<肯定不行>
+回滚的过程中, 数据库挂掉了(相对于数据库执行sql失败, 发生的多. 其实发生的比较少)
+数据库挂掉的情况 > sql出错的情况
 
 
 
