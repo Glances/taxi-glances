@@ -2855,6 +2855,12 @@ tcc  try confirm cancel
 
 # 569 TCC-mysql-redis-混合实战
 
+
+
+lcn: lock confirm 
+
+
+
 注意使用场景
 一般都不用tcc， 使用lcn即可
 
@@ -2939,7 +2945,7 @@ lcn 关键点: 代理数据源, 代理 connection
 
 
 
-
+aop 相关: 静态代理, 动态代理 cglib
 
 
 
