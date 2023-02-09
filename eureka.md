@@ -2938,7 +2938,10 @@ lcn 关键点: 代理数据源, 代理 connection
         return dtxLogicWeaver.runTransaction(dtxInfo, point::proceed);
     }
 
-		
+		->
+      
+      
+    
 ```
 
 ![24-tcc-mysql-redis-源码](24-tcc-mysql-redis-%E6%BA%90%E7%A0%81.png)
@@ -2958,6 +2961,15 @@ aop 相关: 静态代理, 动态代理 cglib
 
 
 # 560 Seata AT 模式
+
+![25-seata-at](25-seata-at.png)
+
+
+
+高并发情况下, 分布式事务的解决方案:
+前面讲的: 2pc, 3pc, 消息队列+分布式事务, lcn
+
+
 
 1阶段:
 	1 执行业务数据 + 2 回滚日志记录. 提交本地事务(1和2), 释放资源
@@ -2979,6 +2991,21 @@ if 回滚失败怎么办?
 
 
 
+# 571 Seata-at-tcc-空回滚-幂等-悬挂
+
+
+
+AT 模式 auto transaction
+
+
+
+AT 和两阶段区别:
+
+step3 执行业务sql, 回滚sql
+
+两阶段: 不提交不释放资源
+
+![26-seata-at-tcc-空回滚-幂等-悬挂](26-seata-at-tcc-空回滚-幂等-悬挂.png)
 
 
 
@@ -2986,4 +3013,7 @@ if 回滚失败怎么办?
 
 
 
+
+
+1h 注意注意注意
 
