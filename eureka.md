@@ -3007,13 +3007,35 @@ step3 执行业务sql, 回滚sql
 
 ![26-seata-at-tcc-空回滚-幂等-悬挂](26-seata-at-tcc-空回滚-幂等-悬挂.png)
 
+# 572 Seata 实战 
+
+
+
+```
+
+/Users/wangxinze/Downloads/apache-maven-3.6.3
+/Users/wangxinze/.m2/settings.xml
+/Users/wangxinze/.m2/repository
+
+```
+
+
+
+lcn 和 seata  在 吞吐量方面还是差一些
+
+
+
+---
+
+|        | 2pc  | tcc  | 消息队列 |      |
+| ------ | ---- | ---- | -------- | ---- |
+| 一致性 | 强   | 最终 | 最终     |      |
+| 吞吐量 | 低   | 中等 | 高       |      |
+| 复杂度 | 简单 | 复杂 | 中等     |      |
 
 
 
 
 
 
-
-
-1h 注意注意注意
 
